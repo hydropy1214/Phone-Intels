@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'wouter';
 import { useAuth } from '@/components/auth-provider';
-import { Key, Search, Lock, Terminal, UploadCloud } from 'lucide-react';
+import { Key, Search, Lock, Terminal, UploadCloud, BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -11,6 +11,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: '/',     label: 'LOOKUP',     icon: Search,      desc: 'Single number' },
     { href: '/bulk', label: 'BULK CHECK', icon: UploadCloud, desc: 'File / paste list' },
     { href: '/keys', label: 'API KEYS',   icon: Key,         desc: 'Manage access keys' },
+    { href: '/docs', label: 'API DOCS',   icon: BookOpen,    desc: 'Usage guide & fields' },
   ];
 
   return (

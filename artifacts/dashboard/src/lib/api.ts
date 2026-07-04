@@ -1,19 +1,22 @@
 import axios from 'axios';
 
+// Admin secret is stored in sessionStorage (cleared when tab/browser closes).
+// API keys are stored in localStorage so they persist across sessions.
+
 export function setAdminSecret(secret: string) {
   axios.defaults.headers.common['X-Admin-Secret'] = secret;
-  localStorage.setItem('admin_secret', secret);
+  sessionStorage.setItem('admin_secret', secret);
 }
 
 export function clearAdminSecret() {
   delete axios.defaults.headers.common['X-Admin-Secret'];
-  localStorage.removeItem('admin_secret');
+  sessionStorage.removeItem('admin_secret');
   localStorage.removeItem('api_key');
   delete axios.defaults.headers.common['X-API-Key'];
 }
 
 export function getStoredSecret(): string | null {
-  return localStorage.getItem('admin_secret');
+  return sessionStorage.getItem('admin_secret');
 }
 
 export function setApiKey(key: string) {
@@ -48,7 +51,9 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       });
     }
 
-    if (secret) headers.set('X-Admin-Secret', secret);
+    // Only send admin secret to admin-specific routes
+    const isAdminPath = url.includes('/api/admin/');
+    if (secret && isAdminPath) headers.set('X-Admin-Secret', secret);
     if (apiKey) headers.set('X-API-Key', apiKey);
 
     const response = await originalFetch(input, { ...init, headers });

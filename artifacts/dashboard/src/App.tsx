@@ -9,6 +9,7 @@ import { Layout } from '@/components/layout';
 import { Lookup } from '@/pages/lookup';
 import { Bulk } from '@/pages/bulk';
 import { Keys } from '@/pages/keys';
+import { Docs } from '@/pages/docs';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,6 +26,7 @@ function Router() {
         <Route path="/"      component={Lookup} />
         <Route path="/bulk"  component={Bulk}   />
         <Route path="/keys"  component={Keys}   />
+        <Route path="/docs"  component={Docs}   />
         <Route component={NotFound} />
       </Switch>
     </Layout>

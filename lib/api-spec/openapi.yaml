@@ -392,15 +392,40 @@ components:
           items:
             type: string
           description: IANA timezone identifiers
+        # NANPA / OCN enrichment (US NANP numbers only)
+        ocn:
+          type: string
+          description: >
+            Operating Company Number assigned by NANPA to the block holder.
+            US NANP numbers only; empty for international numbers.
+        ocn_name:
+          type: string
+          description: Operating company name from LocalCallingGuide/NANPA data
+        ocn_type:
+          type: string
+          description: >
+            OCN company type: CLEC (competitive LEC), ILEC (incumbent LEC),
+            RBOC (Baby Bell), WIRELESS, CABLE, PAGING, or empty for non-NANP.
+        state:
+          type: string
+          description: >
+            US state or territory abbreviation derived from NPA-NXX block assignment
+            (e.g. "CA", "TX"). Empty for non-NANP numbers.
+        rate_center:
+          type: string
+          description: NANPA rate center name (e.g. "SAN FRANCISCO"). US NANP only.
         # Heuristic / derived
         active:
           type: boolean
           description: >
-            Best-effort heuristic — valid + not in community abuse lists + fraud score < 60.
+            Best-effort heuristic — valid + not in community abuse lists + risk score < 60.
             NOT a live reachability check.
+        risk_score:
+          type: number
+          description: Risk score 0–100 (primary field)
         fraud_score:
           type: number
-          description: Risk score 0–100
+          description: Risk score 0–100 (alias for risk_score, kept for backwards compatibility)
         fraud_reasons:
           type: array
           items:
@@ -483,7 +508,13 @@ components:
         - city
         - region
         - timezones
+        - ocn
+        - ocn_name
+        - ocn_type
+        - state
+        - rate_center
         - active
+        - risk_score
         - fraud_score
         - fraud_reasons
         - recent_abuse

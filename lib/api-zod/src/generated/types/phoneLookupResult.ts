@@ -40,9 +40,21 @@ export interface PhoneLookupResult {
   region: string;
   /** IANA timezone identifiers */
   timezones: string[];
-  /** Best-effort heuristic — valid + not in community abuse lists + fraud score < 60. NOT a live reachability check. */
+  /** Operating Company Number assigned by NANPA to the block holder. US NANP numbers only; empty for international numbers. */
+  ocn: string;
+  /** Operating company name from LocalCallingGuide/NANPA data */
+  ocn_name: string;
+  /** OCN company type: CLEC (competitive LEC), ILEC (incumbent LEC), RBOC (Baby Bell), WIRELESS, CABLE, PAGING, or empty for non-NANP. */
+  ocn_type: string;
+  /** US state or territory abbreviation derived from NPA-NXX block assignment (e.g. "CA", "TX"). Empty for non-NANP numbers. */
+  state: string;
+  /** NANPA rate center name (e.g. "SAN FRANCISCO"). US NANP only. */
+  rate_center: string;
+  /** Best-effort heuristic — valid + not in community abuse lists + risk score < 60. NOT a live reachability check. */
   active: boolean;
-  /** Risk score 0–100 */
+  /** Risk score 0–100 (primary field) */
+  risk_score: number;
+  /** Risk score 0–100 (alias for risk_score, kept for backwards compatibility) */
   fraud_score: number;
   fraud_reasons: string[];
   /** Found in community abuse datasets */

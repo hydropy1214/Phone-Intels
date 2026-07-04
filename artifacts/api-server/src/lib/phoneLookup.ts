@@ -53,9 +53,17 @@ export interface PhoneLookupResult {
   region: string;
   timezones: string[];
 
+  // NANPA / OCN enrichment (US NANP numbers only)
+  ocn: string;
+  ocn_name: string;
+  ocn_type: string;
+  state: string;
+  rate_center: string;
+
   // Heuristic / community
   active: boolean;
-  fraud_score: number;
+  risk_score: number;
+  fraud_score: number; // alias for risk_score
   fraud_reasons: string[];
   recent_abuse: boolean;
   spammer: boolean;

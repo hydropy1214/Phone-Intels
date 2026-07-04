@@ -1,1 +1,2 @@
 - [Orval zod schema naming](orval-zod-naming.md) — generated zod validators are named per-operation (e.g. `PhoneLookupResponse`), not by the OpenAPI component schema name.
+- [LocalCallingGuide NPA-NXX API](lcg-api-url.md) — correct endpoint is xmlprefix.php (not lca_prefix.php); XML returns per-block prefixdata; cache uses fcntl locking + atomic rename.

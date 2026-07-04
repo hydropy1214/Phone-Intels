@@ -41,17 +41,24 @@ function resolveCarrier(data: any): string {
 
 function exportCSV(rows: string[], cache: Map<string, any>) {
   const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const header = 'Phone,Country,Valid,Risky,Fraud Score,Carrier,Line Type,Do Not Call\n';
+  const header = 'Phone,Country,State,Valid,Risky,Risk Score,Carrier,OCN,OCN Type,Line Type,Do Not Call,VoIP,Prepaid\n';
   const body = rows.map(phone => {
     const d = cache.get(phone);
-    if (!d) return [phone,'','','','','','',''].map(esc).join(',');
+    if (!d) return [phone,'','','','','','','','','','','',''].map(esc).join(',');
     return [
-      d.e164 ?? phone, d.country ?? '',
-      d.valid  ? 'true' : 'false',
-      d.risky  ? 'true' : 'false',
-      d.fraud_score ?? 0,
-      resolveCarrier(d), d.line_type ?? '',
-      d.dnc    ? 'true' : 'false',
+      d.e164 ?? phone,
+      d.country ?? '',
+      d.state ?? '',
+      d.valid   ? 'true' : 'false',
+      d.risky   ? 'true' : 'false',
+      d.risk_score ?? d.fraud_score ?? 0,
+      resolveCarrier(d),
+      d.ocn ?? '',
+      d.ocn_type ?? '',
+      d.line_type ?? '',
+      d.dnc     ? 'true' : 'false',
+      d.voip    ? 'true' : 'false',
+      d.prepaid ? 'true' : 'false',
     ].map(esc).join(',');
   }).join('\n');
   const blob = new Blob([header + body], { type: 'text/csv' });
@@ -194,7 +201,7 @@ export function Lookup() {
             <table className="w-full text-sm min-w-[820px]">
               <thead>
                 <tr className="border-b border-border bg-muted/20">
-                  {['Phone','Country','Valid','Risky','Fraud Score','Carrier','Line Type','Do Not Call',''].map(h => (
+                  {['Phone','State','Valid','Risky','Risk Score','Carrier','OCN Type','Line Type','Do Not Call',''].map(h => (
                     <th key={h} className="px-4 py-2.5 text-left font-mono text-[10px] text-muted-foreground tracking-widest uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -284,15 +291,16 @@ function LookupRow({ number, onRemove, onData }: {
         </td>
       ) : (
         <>
-          <td className="px-4 py-3 font-mono text-sm">{data.country || '—'}</td>
+          <td className="px-4 py-3 font-mono text-sm">{data.state || data.country || '—'}</td>
           <td className="px-4 py-3">{pill(data.valid)}</td>
           <td className="px-4 py-3">{pill(data.risky, true)}</td>
-          <td className="px-4 py-3">{scorePill(data.fraud_score ?? 0)}</td>
+          <td className="px-4 py-3">{scorePill(data.risk_score ?? data.fraud_score ?? 0)}</td>
           <td className="px-4 py-3 font-mono text-sm text-foreground/80">
-            <span className="block max-w-[180px] truncate" title={resolveCarrier(data)}>
+            <span className="block max-w-[160px] truncate" title={resolveCarrier(data)}>
               {resolveCarrier(data)}
             </span>
           </td>
+          <td className="px-4 py-3 font-mono text-xs text-foreground/70">{data.ocn_type || '—'}</td>
           <td className="px-4 py-3 font-mono text-sm text-foreground/80">{data.line_type || '—'}</td>
           <td className="px-4 py-3">{pill(data.dnc, true)}</td>
         </>

@@ -339,7 +339,7 @@ export function Bulk() {
     return true;
   });
 
-  const filterTabs: { key: FilterKey; label: string; count: number }[] = [
+  const filterTabsAll: { key: FilterKey; label: string; count: number }[] = [
     { key: 'all',        label: 'All',        count: uniqueRows.length },
     { key: 'valid',      label: 'Valid',      count: stats.valid },
     { key: 'invalid',    label: 'Invalid',    count: stats.invalid + stats.errors },
@@ -349,7 +349,8 @@ export function Bulk() {
     { key: 'landline',   label: 'Landline',   count: stats.landline },
     { key: 'duplicates', label: 'Duplicates', count: stats.duplicates },
     { key: 'errors',     label: 'Errors',     count: stats.errors },
-  ].filter(t => t.count > 0 || t.key === 'all');
+  ];
+  const filterTabs = filterTabsAll.filter(t => t.count > 0 || t.key === 'all');
 
   const detectedCount = pasteText.trim() ? buildRows(pasteText).filter(r => r.status !== 'duplicate').length : 0;
 

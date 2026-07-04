@@ -78,7 +78,174 @@ except ImportError:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 METADATA_PATH = os.path.join(DATA_DIR, "metadata.json")
+NPANXX_CACHE_PATH = os.path.join(DATA_DIR, "npanxx_cache.json")
 REQUEST_TIMEOUT = 20
+
+# ---------------------------------------------------------------------------
+# Static NPA (area code) → US state/territory abbreviation
+# Source: NANPA public area code assignments (static, updated rarely)
+# ---------------------------------------------------------------------------
+
+NPA_STATE_MAP: dict[str, str] = {
+    # Alabama
+    "205": "AL", "251": "AL", "256": "AL", "334": "AL", "938": "AL",
+    # Alaska
+    "907": "AK",
+    # Arizona
+    "480": "AZ", "520": "AZ", "602": "AZ", "623": "AZ", "928": "AZ",
+    # Arkansas
+    "479": "AR", "501": "AR", "870": "AR",
+    # California
+    "209": "CA", "213": "CA", "279": "CA", "310": "CA", "323": "CA",
+    "341": "CA", "350": "CA", "408": "CA", "415": "CA", "424": "CA",
+    "442": "CA", "510": "CA", "530": "CA", "559": "CA", "562": "CA",
+    "619": "CA", "626": "CA", "628": "CA", "650": "CA", "657": "CA",
+    "661": "CA", "669": "CA", "707": "CA", "714": "CA", "747": "CA",
+    "760": "CA", "764": "CA", "805": "CA", "818": "CA", "820": "CA",
+    "831": "CA", "840": "CA", "858": "CA", "909": "CA", "916": "CA",
+    "925": "CA", "949": "CA", "951": "CA",
+    # Colorado
+    "303": "CO", "719": "CO", "720": "CO", "970": "CO",
+    # Connecticut
+    "203": "CT", "475": "CT", "860": "CT", "959": "CT",
+    # Delaware
+    "302": "DE",
+    # DC
+    "202": "DC",
+    # Florida
+    "239": "FL", "305": "FL", "321": "FL", "352": "FL", "386": "FL",
+    "407": "FL", "448": "FL", "561": "FL", "584": "FL", "689": "FL",
+    "727": "FL", "754": "FL", "772": "FL", "786": "FL", "813": "FL",
+    "850": "FL", "863": "FL", "904": "FL", "941": "FL", "954": "FL",
+    # Georgia
+    "229": "GA", "404": "GA", "470": "GA", "478": "GA", "678": "GA",
+    "706": "GA", "762": "GA", "770": "GA", "912": "GA", "943": "GA",
+    # Hawaii
+    "808": "HI",
+    # Idaho
+    "208": "ID", "986": "ID",
+    # Illinois
+    "217": "IL", "224": "IL", "309": "IL", "312": "IL", "331": "IL",
+    "447": "IL", "464": "IL", "618": "IL", "630": "IL", "708": "IL",
+    "730": "IL", "773": "IL", "779": "IL", "815": "IL", "847": "IL", "872": "IL",
+    # Indiana
+    "219": "IN", "260": "IN", "317": "IN", "463": "IN", "574": "IN",
+    "765": "IN", "812": "IN", "930": "IN",
+    # Iowa
+    "319": "IA", "515": "IA", "563": "IA", "641": "IA", "712": "IA",
+    # Kansas
+    "316": "KS", "620": "KS", "785": "KS", "913": "KS",
+    # Kentucky
+    "270": "KY", "364": "KY", "502": "KY", "606": "KY", "859": "KY",
+    # Louisiana
+    "225": "LA", "318": "LA", "337": "LA", "504": "LA", "985": "LA",
+    # Maine
+    "207": "ME",
+    # Maryland
+    "240": "MD", "301": "MD", "410": "MD", "443": "MD", "667": "MD",
+    # Massachusetts
+    "339": "MA", "351": "MA", "413": "MA", "508": "MA", "617": "MA",
+    "774": "MA", "781": "MA", "857": "MA", "978": "MA",
+    # Michigan
+    "231": "MI", "248": "MI", "269": "MI", "313": "MI", "517": "MI",
+    "586": "MI", "616": "MI", "679": "MI", "734": "MI", "810": "MI",
+    "906": "MI", "947": "MI", "989": "MI",
+    # Minnesota
+    "218": "MN", "320": "MN", "507": "MN", "612": "MN", "651": "MN",
+    "763": "MN", "952": "MN",
+    # Mississippi
+    "228": "MS", "601": "MS", "662": "MS", "769": "MS",
+    # Missouri
+    "314": "MO", "417": "MO", "557": "MO", "573": "MO", "636": "MO",
+    "660": "MO", "816": "MO",
+    # Montana
+    "406": "MT",
+    # Nebraska
+    "308": "NE", "402": "NE", "531": "NE",
+    # Nevada
+    "702": "NV", "725": "NV", "775": "NV",
+    # New Hampshire
+    "603": "NH",
+    # New Jersey
+    "201": "NJ", "551": "NJ", "609": "NJ", "640": "NJ", "732": "NJ",
+    "848": "NJ", "856": "NJ", "862": "NJ", "908": "NJ", "973": "NJ",
+    # New Mexico
+    "505": "NM", "575": "NM",
+    # New York
+    "212": "NY", "315": "NY", "332": "NY", "347": "NY", "363": "NY",
+    "516": "NY", "518": "NY", "585": "NY", "607": "NY", "631": "NY",
+    "646": "NY", "680": "NY", "716": "NY", "718": "NY", "838": "NY",
+    "845": "NY", "914": "NY", "917": "NY", "929": "NY", "934": "NY",
+    # North Carolina
+    "252": "NC", "336": "NC", "704": "NC", "743": "NC", "828": "NC",
+    "910": "NC", "919": "NC", "980": "NC", "984": "NC",
+    # North Dakota
+    "701": "ND",
+    # Ohio
+    "216": "OH", "220": "OH", "234": "OH", "283": "OH", "326": "OH",
+    "330": "OH", "380": "OH", "419": "OH", "440": "OH", "513": "OH",
+    "567": "OH", "614": "OH", "740": "OH", "937": "OH",
+    # Oklahoma
+    "405": "OK", "539": "OK", "572": "OK", "580": "OK", "918": "OK",
+    # Oregon
+    "458": "OR", "503": "OR", "541": "OR", "971": "OR",
+    # Pennsylvania
+    "215": "PA", "223": "PA", "267": "PA", "272": "PA", "412": "PA",
+    "445": "PA", "484": "PA", "570": "PA", "582": "PA", "610": "PA",
+    "717": "PA", "724": "PA", "814": "PA", "835": "PA", "878": "PA",
+    # Rhode Island
+    "401": "RI",
+    # South Carolina
+    "803": "SC", "839": "SC", "843": "SC", "854": "SC", "864": "SC",
+    # South Dakota
+    "605": "SD",
+    # Tennessee
+    "423": "TN", "615": "TN", "629": "TN", "731": "TN", "865": "TN",
+    "901": "TN", "931": "TN",
+    # Texas
+    "210": "TX", "214": "TX", "254": "TX", "281": "TX", "325": "TX",
+    "346": "TX", "361": "TX", "409": "TX", "430": "TX", "432": "TX",
+    "469": "TX", "512": "TX", "682": "TX", "713": "TX", "726": "TX",
+    "737": "TX", "806": "TX", "817": "TX", "830": "TX", "832": "TX",
+    "903": "TX", "915": "TX", "936": "TX", "940": "TX", "945": "TX",
+    "956": "TX", "972": "TX", "979": "TX",
+    # Utah
+    "385": "UT", "435": "UT", "801": "UT",
+    # Vermont
+    "802": "VT",
+    # Virginia
+    "276": "VA", "434": "VA", "540": "VA", "571": "VA", "703": "VA",
+    "757": "VA", "804": "VA",
+    # Washington
+    "206": "WA", "253": "WA", "360": "WA", "425": "WA", "509": "WA", "564": "WA",
+    # West Virginia
+    "304": "WV", "681": "WV",
+    # Wisconsin
+    "262": "WI", "274": "WI", "414": "WI", "534": "WI", "608": "WI",
+    "715": "WI", "920": "WI",
+    # Wyoming
+    "307": "WY",
+    # US Territories
+    "787": "PR", "939": "PR",
+    "340": "VI",
+    "671": "GU",
+    "684": "AS",
+    "670": "MP",
+    # Canada — province abbreviations
+    "403": "AB", "587": "AB", "780": "AB",
+    "604": "BC", "778": "BC", "236": "BC", "250": "BC",
+    "204": "MB", "431": "MB",
+    "506": "NB",
+    "709": "NL",
+    "902": "NS", "782": "NS",
+    "416": "ON", "437": "ON", "647": "ON", "226": "ON", "249": "ON",
+    "289": "ON", "343": "ON", "365": "ON", "519": "ON", "548": "ON",
+    "613": "ON", "705": "ON", "807": "ON", "905": "ON",
+    "418": "QC", "438": "QC", "450": "QC", "514": "QC", "579": "QC",
+    "581": "QC", "819": "QC", "873": "QC",
+    "306": "SK", "639": "SK",
+    "867": "YT",
+}
 USER_AGENT = "phone-tool/3.0 (+offline phone intelligence)"
 
 # Community spam/abuse list sources — all freely downloadable.
@@ -428,6 +595,186 @@ def _load_npa_nxx_carriers() -> dict:
 
 # Loaded once at import time — zero overhead per lookup
 NPA_NXX_CARRIERS: dict = _load_npa_nxx_carriers()
+
+# ---------------------------------------------------------------------------
+# LocalCallingGuide.com NPA-NXX lookup — OCN, carrier, state, line type
+# ---------------------------------------------------------------------------
+# Free public API, no key required. Results are cached in npanxx_cache.json
+# so subsequent lookups are instant. First lookup of a new NPA-NXX makes one
+# HTTP request (~100-200 ms); all subsequent hits are file-cached.
+# ---------------------------------------------------------------------------
+
+_NPANXX_CACHE: dict = {}       # in-process cache for this run (successful lookups only)
+_NPANXX_CACHE_LOADED = False   # lazy-load flag
+
+# In-memory-only miss set: keys that failed in this process run.
+# Not persisted to disk, so transient LCG failures recover across process restarts.
+_NPANXX_MISS_SET: set = set()
+
+# fcntl for advisory file locking on POSIX (prevents concurrent-subprocess races)
+try:
+    import fcntl as _fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
+
+def _ensure_npanxx_cache_loaded() -> None:
+    global _NPANXX_CACHE, _NPANXX_CACHE_LOADED
+    if _NPANXX_CACHE_LOADED:
+        return
+    _NPANXX_CACHE_LOADED = True
+    if os.path.exists(NPANXX_CACHE_PATH):
+        try:
+            with open(NPANXX_CACHE_PATH, "r") as f:
+                _NPANXX_CACHE = json.load(f)
+        except Exception:
+            _NPANXX_CACHE = {}
+
+
+def _save_npanxx_cache() -> None:
+    """
+    Persist successful NPA-NXX cache entries to disk safely.
+
+    Uses advisory fcntl locking + atomic rename to prevent concurrent
+    Python subprocess races (batch endpoint spawns up to 10 subprocesses).
+    Only successful lookup results are persisted — miss markers stay in-memory
+    so transient LCG failures recover naturally on the next process start.
+    """
+    try:
+        ensure_data_dir()
+        tmp_path  = str(NPANXX_CACHE_PATH) + ".tmp"
+        lock_path = str(NPANXX_CACHE_PATH) + ".lock"
+        with open(lock_path, "w") as lock_fh:
+            if _HAS_FCNTL:
+                _fcntl.flock(lock_fh, _fcntl.LOCK_EX)
+            # Merge with whatever another process may have written since our load
+            merged: dict = {}
+            if os.path.exists(NPANXX_CACHE_PATH):
+                try:
+                    with open(NPANXX_CACHE_PATH, "r") as rf:
+                        merged = json.load(rf)
+                except Exception:
+                    merged = {}
+            # Our in-process cache wins for any key we fetched this run
+            merged.update(_NPANXX_CACHE)
+            # Write to temp file then atomically rename (POSIX guarantees atomicity)
+            with open(tmp_path, "w") as wf:
+                json.dump(merged, wf, separators=(",", ":"))
+            os.replace(tmp_path, NPANXX_CACHE_PATH)
+            # Sync in-process view with merged result
+            _NPANXX_CACHE.update(merged)
+    except Exception:
+        pass
+    finally:
+        try:
+            if os.path.exists(str(NPANXX_CACHE_PATH) + ".lock"):
+                os.unlink(str(NPANXX_CACHE_PATH) + ".lock")
+        except Exception:
+            pass
+
+
+
+
+# LCG company-type code → OCN type label (industry standard names)
+_LCG_COMPANY_TYPE: dict[str, str] = {
+    "C": "CLEC",      # Competitive Local Exchange Carrier
+    "I": "ILEC",      # Incumbent Local Exchange Carrier
+    "R": "RBOC",      # Regional Bell Operating Company
+    "W": "WIRELESS",  # Wireless carrier
+    "B": "CABLE",     # Cable operator
+    "G": "GOVERNMENT",
+    "P": "PAGING",
+    "N": "MVNO",
+}
+
+# Derived line type from OCN/company type
+_LCG_COMPANY_TYPE_TO_LINE_TYPE: dict[str, str] = {
+    "W": "Wireless",
+    "I": "Landline",
+    "R": "Landline",
+    "B": "Landline",
+    "P": "Paging",
+}
+
+
+def lookup_npanxx_lcg(npa: str, nxx: str, block: str = "") -> Optional[dict]:
+    """
+    Fetch NPA-NXX block data from LocalCallingGuide.com xmlprefix.php (free, no key).
+
+    Returns a dict with: company_name, ocn, ocn_type, state, rate_center, line_type
+    Returns None on failure or when no data is available for this prefix.
+
+    Caching strategy:
+    - Successful results are persisted to data/npanxx_cache.json (atomic write + merge).
+    - Failures/misses are tracked in an in-memory set only (_NPANXX_MISS_SET), so a
+      transient LCG outage or network error recovers automatically on the next process start.
+
+    LCG company-type codes: C=CLEC, I=ILEC, R=RBOC, W=WIRELESS, B=Cable, P=Paging
+    """
+    global _NPANXX_CACHE, _NPANXX_MISS_SET
+    _ensure_npanxx_cache_loaded()
+
+    # Use NPA+NXX+block as cache key for per-block accuracy (block = first subscriber digit)
+    base_key = f"{npa}{nxx}"
+    block_key = f"{base_key}_{block}" if block else base_key
+
+    # Hit: successful result already cached on disk/in-memory
+    if block_key in _NPANXX_CACHE:
+        return _NPANXX_CACHE[block_key] or None
+    # Hit: base key has data (block not individually cached yet)
+    if base_key in _NPANXX_CACHE:
+        return _NPANXX_CACHE[base_key] or None
+    # Miss: failed during this process run — don't retry (avoids hammering LCG)
+    if block_key in _NPANXX_MISS_SET or base_key in _NPANXX_MISS_SET:
+        return None
+
+    if requests is None:
+        return None
+
+    try:
+        import xml.etree.ElementTree as ET
+        url = f"https://www.localcallingguide.com/xmlprefix.php?npa={npa}&nxx={nxx}"
+        resp = requests.get(url, timeout=6, headers={"User-Agent": USER_AGENT})
+        if resp.status_code == 200 and resp.content:
+            root = ET.fromstring(resp.content)
+            # LCG returns one <prefixdata> per 1000-number block (x=0..9)
+            # Build map block → data, cache all blocks in one disk write
+            blocks: dict[str, dict] = {}
+            for prefix in root.findall("prefixdata"):
+                x     = (prefix.findtext("x") or "").strip()
+                ctype = (prefix.findtext("company-type") or "").strip().upper()
+                data  = {
+                    "company_name": (prefix.findtext("company-name") or "").strip(),
+                    "ocn":          (prefix.findtext("ocn") or "").strip(),
+                    "ocn_type":     _LCG_COMPANY_TYPE.get(ctype, ctype),
+                    "state":        (prefix.findtext("region") or "").strip().upper(),
+                    "rate_center":  (prefix.findtext("rc") or "").strip(),
+                    "ilec_name":    (prefix.findtext("ilec-name") or "").strip(),
+                    "line_type":    _LCG_COMPANY_TYPE_TO_LINE_TYPE.get(ctype, ""),
+                }
+                bkey = f"{base_key}_{x}" if x else base_key
+                blocks[bkey] = data
+
+            if blocks:
+                # Persist all blocks at once
+                _NPANXX_CACHE.update(blocks)
+                # Also populate base key with first block as fallback
+                if base_key not in _NPANXX_CACHE:
+                    _NPANXX_CACHE[base_key] = next(iter(blocks.values()))
+                _save_npanxx_cache()
+
+                # Return the block-specific result, falling back to base key
+                return _NPANXX_CACHE.get(block_key) or _NPANXX_CACHE.get(base_key)
+
+    except Exception:
+        pass
+
+    # Failure: record in-memory miss only (not persisted — recovers on next process start)
+    _NPANXX_MISS_SET.add(block_key)
+    _NPANXX_MISS_SET.add(base_key)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Data download / setup
@@ -1034,6 +1381,13 @@ class LookupResult:
     # Pattern analysis
     pattern_risks: list = field(default_factory=list)
 
+    # NANPA / OCN enrichment (US NANP only, via LocalCallingGuide)
+    ocn: str = ""           # Operating Company Number (e.g. "6529")
+    ocn_name: str = ""      # Operating company name from LCG
+    ocn_type: str = ""      # CLEC | ILEC | RBOC | WIRELESS | CABLE | PAGING | …
+    state: str = ""         # US state / territory abbreviation (e.g. "CA")
+    rate_center: str = ""   # NANPA rate center name
+
     # Structured assessments (heuristic)
     hlr_status: dict = field(default_factory=dict)
     carrier_type: dict = field(default_factory=dict)
@@ -1130,6 +1484,38 @@ def analyze_number(
     # output type names (Wireless / Landline / Toll Free / …)
     if not _npa_nxx_hit:
         result.line_type = STANDARD_LINE_TYPES.get(num_type, "Unknown")
+
+    # --- LocalCallingGuide.com NPA-NXX enrichment (OCN / carrier / state) ---
+    # Adds OCN, company name, OCN type, state, rate center for US NANP numbers.
+    # First call for a new NPA-NXX makes one HTTP request (~100-200 ms);
+    # all subsequent calls for the same NPA-NXX are served from file cache.
+    if result.e164:
+        _lcg_digits = result.e164.lstrip("+")
+        if _lcg_digits.startswith("1") and len(_lcg_digits) == 11:
+            _lcg_npa   = _lcg_digits[1:4]
+            _lcg_nxx   = _lcg_digits[4:7]
+            _lcg_block = _lcg_digits[7:8]  # first digit of subscriber (0-9)
+            _lcg = lookup_npanxx_lcg(_lcg_npa, _lcg_nxx, _lcg_block)
+            if _lcg:
+                result.ocn         = _lcg.get("ocn", "")
+                result.ocn_name    = _lcg.get("company_name", "")
+                result.ocn_type    = _lcg.get("ocn_type", "")
+                result.state       = _lcg.get("state", "")
+                result.rate_center = _lcg.get("rate_center", "")
+                # Use LCG carrier name when phonenumbers gave nothing
+                if not result.carrier and _lcg.get("company_name"):
+                    result.carrier    = _lcg["company_name"]
+                    carrier_lower     = result.carrier.lower()
+                    result.is_prepaid = any(kw in carrier_lower for kw in PREPAID_CARRIER_KEYWORDS)
+                # Override line type from LCG use code when no authoritative NANPA DB hit
+                if not _npa_nxx_hit and _lcg.get("line_type"):
+                    result.line_type        = _lcg["line_type"]
+                    result.line_type_source = "lcg_npa_nxx"
+                    if _lcg["line_type"] == "VOIP":
+                        result.is_voip = True
+            # Fallback: derive state from static NPA map when LCG returns nothing
+            if not result.state:
+                result.state = NPA_STATE_MAP.get(_lcg_npa, "")
 
     # --- VoIP detection (multi-layer) ---
     voip_source = "none"
@@ -1329,9 +1715,17 @@ def to_api_dict(result: LookupResult) -> dict:
         "region":               result.region,
         "timezones":            result.timezones,
 
+        # NANPA / OCN enrichment (US NANP only)
+        "ocn":                  result.ocn,
+        "ocn_name":             result.ocn_name,
+        "ocn_type":             result.ocn_type,
+        "state":                result.state,
+        "rate_center":          result.rate_center,
+
         # Community / heuristic
         "active":               result.is_active_estimate,
-        "fraud_score":          result.fraud_score_int,
+        "risk_score":           result.fraud_score_int,   # primary field
+        "fraud_score":          result.fraud_score_int,   # alias for backwards compat
         "fraud_reasons":        result.fraud_reasons,
         "recent_abuse":         result.is_spam,
         "spammer":              result.is_spam,
@@ -1394,6 +1788,11 @@ def print_result_table(result: LookupResult):
         ("Line Type",          f"{api['line_type']} [{api['line_type_source']}]"),
         ("Carrier",            api["carrier"] or "Unknown (US mobile: LNP prevents offline ID)"),
         ("Carrier Type",       f"{api['carrier_type'].get('type', 'Unknown')} [{api['carrier_type'].get('confidence', '?')}]"),
+        ("OCN",                api["ocn"] or "— (US NANP only)"),
+        ("OCN Name",           api["ocn_name"] or "—"),
+        ("OCN Type",           api["ocn_type"] or "—"),
+        ("State",              api["state"] or "—"),
+        ("Rate Center",        api["rate_center"] or "—"),
         ("VoIP",               fmt(api["voip"])),
         ("Prepaid",            fmt(api["prepaid"]) + " [heuristic]"),
         ("Country",            api["country"] or "Unknown"),
@@ -1401,7 +1800,7 @@ def print_result_table(result: LookupResult):
         ("Region",             api["region"] or "Unknown"),
         ("Timezones",          fmt(api["timezones"])),
         ("", ""),
-        ("Fraud Score",        f"{api['fraud_score']}/100"),
+        ("Risk Score",         f"{api['risk_score']}/100"),
         ("Community Spam",     fmt(api["spam"]) + f" [{api['spam_source_count']} source(s)]"),
         ("DNC (proxy)",        fmt(api["dnc"]) + " [community proxy — NOT FTC registry]"),
         ("Pattern Flags",      fmt(api["pattern_flags"])),

@@ -56,11 +56,8 @@ async function bootstrap() {
     if (existing.length === 0) {
       const defaultKey = `pk_${crypto.randomBytes(24).toString("hex")}`;
       await db.insert(apiKeysTable).values({ key: defaultKey, label: "Default Key" });
-      logger.info({ key: defaultKey }, "╔══════════════════════════════════════╗");
-      logger.info({}, "║  FIRST RUN — credentials generated   ║");
-      logger.info({ adminSecret }, "║  Admin Secret (copy this!)           ║");
-      logger.info({ defaultKey }, "║  Default API Key                     ║");
-      logger.info({}, "╚══════════════════════════════════════╝");
+      // Credentials written to .admin_secret file and the database — do NOT log raw values.
+      logger.info({ keyPrefix: defaultKey.slice(0, 8) + "…" }, "FIRST RUN — default API key created (full value in DB; use dashboard to view)");
     }
   } catch (err) {
     logger.warn({ err }, "bootstrap: could not auto-create default API key");
@@ -74,8 +71,8 @@ app.listen(port, async (err) => {
   }
 
   logger.info(
-    { port, adminSecret },
-    "Server listening — ADMIN_API_SECRET shown above (copy for dashboard login)"
+    { port, adminSecretPrefix: adminSecret.slice(0, 12) + "…" },
+    "Server listening — admin secret loaded (set ADMIN_API_SECRET env var to override)"
   );
 
   await bootstrap();
