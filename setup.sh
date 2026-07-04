@@ -1,361 +1,497 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Phone Intelligence Platform — Ubuntu One-Click Setup
-# =============================================================================
-# Installs all system dependencies, sets up PostgreSQL, builds the API server
-# and dashboard, configures Nginx + Supervisor, then starts everything.
+#  Phone Intelligence Platform — Ubuntu Production Setup
+#  Fully automatic. Run once on a fresh Ubuntu 20.04 / 22.04 / 24.04 server.
 #
-# Run:  chmod +x setup.sh && sudo ./setup.sh
+#  USAGE:
+#    chmod +x setup.sh
+#    sudo ./setup.sh
 #
-# Admin password (dashboard login):  Brokenlove121@
-# Dashboard:  http://<your-server-ip>          (port 80 via Nginx)
-# API:        http://<your-server-ip>/api/     (proxied by Nginx)
+#  WHAT THIS DOES (in order):
+#    1.  Installs: Node.js 20, pnpm, Python 3 + deps, PostgreSQL, Nginx
+#    2.  Creates a PostgreSQL database + user automatically
+#    3.  Installs all Node.js workspace dependencies
+#    4.  Applies the database schema (Drizzle push)
+#    5.  Builds the API server (esbuild bundle)
+#    6.  Builds the dashboard (React → static files)
+#    7.  Configures Nginx to serve dashboard + proxy API
+#    8.  Creates a systemd service → runs FOREVER, restarts on crash, starts on boot
+#    9.  Opens firewall ports 80 + 443 (ufw, if active)
+#   10.  Prints access URLs and admin credentials
+#
+#  AFTER SETUP:
+#    Dashboard : http://<server-ip>/
+#    API       : http://<server-ip>/api/
+#    Password  : Brokenlove121@
+#
+#  RE-RUNNING: Safe to run again at any time (idempotent).
 # =============================================================================
 
 set -euo pipefail
+IFS=$'\n\t'
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
-info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
-success() { echo -e "${GREEN}[ OK ]${NC}  $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-step()    { echo -e "\n${BOLD}${CYAN}══ $* ══${NC}"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+# ── Terminal colors ────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[1;33m'
+CYN='\033[0;36m'; BLD='\033[1m'; NC='\033[0m'
+info()  { echo -e "${CYN}[INFO]${NC}  $*"; }
+ok()    { echo -e "${GRN}[ OK ]${NC}  $*"; }
+warn()  { echo -e "${YLW}[WARN]${NC}  $*"; }
+die()   { echo -e "${RED}[FAIL]${NC}  $*" >&2; exit 1; }
+banner(){ echo -e "\n${BLD}${CYN}━━━  $*  ━━━${NC}"; }
 
-# ── Root check ────────────────────────────────────────────────────────────────
-[[ $EUID -eq 0 ]] || error "Please run as root:  sudo ./setup.sh"
+# ── Must run as root ───────────────────────────────────────────────────────────
+[[ $EUID -eq 0 ]] || die "Run as root:  sudo ./setup.sh"
 
-# ── Config ────────────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$SCRIPT_DIR"
+# ── Detect the real non-root user who invoked sudo ────────────────────────────
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  SVCUSER="$SUDO_USER"
+elif id ubuntu &>/dev/null; then
+  SVCUSER="ubuntu"
+elif id deploy &>/dev/null; then
+  SVCUSER="deploy"
+else
+  SVCUSER="root"
+fi
 
+# ── Project paths ─────────────────────────────────────────────────────────────
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+API_DIST="$PROJECT_DIR/artifacts/api-server/dist/index.mjs"
+DASH_DIST="$PROJECT_DIR/artifacts/dashboard/dist/public"
+
+# ── Fixed configuration ───────────────────────────────────────────────────────
 ADMIN_SECRET="Brokenlove121@"
 DB_NAME="phone_intelligence"
 DB_USER="phone_user"
 API_PORT=8080
+# Deterministic DB password derived from admin secret (stable across re-runs)
+DB_PASS="$(printf '%s' "${ADMIN_SECRET}__phonedb" | sha256sum | cut -c1-32)"
+DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@127.0.0.1:5432/${DB_NAME}"
 
-# Run Node/Python services as the user who invoked sudo (not root)
-if [[ -n "${SUDO_USER:-}" ]]; then
-  SERVICE_USER="$SUDO_USER"
-elif command -v logname &>/dev/null && logname 2>/dev/null; then
-  SERVICE_USER="$(logname)"
-else
-  SERVICE_USER="root"
-fi
-
-info "Project : $PROJECT_DIR"
-info "User    : $SERVICE_USER"
-info "API port: $API_PORT (Nginx exposes /api/)"
+info "Project   : $PROJECT_DIR"
+info "Service   : running as '$SVCUSER'"
+info "API port  : $API_PORT (Nginx proxies /api/ → it)"
+info "Dashboard : served as static files by Nginx on port 80"
+echo ""
 
 # =============================================================================
-step "1 · System packages"
+banner "STEP 1 · System packages"
 # =============================================================================
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+apt-get install -y -qq \
   curl wget ca-certificates gnupg lsb-release \
-  openssl build-essential \
-  python3 python3-pip \
+  openssl build-essential git \
+  python3 python3-pip python3-venv \
   postgresql postgresql-contrib \
   nginx \
-  supervisor \
-  jq
-success "System packages ready."
+  ufw \
+  jq \
+  logrotate
+ok "System packages installed."
 
 # =============================================================================
-step "2 · Node.js 20"
+banner "STEP 2 · Node.js 20 (LTS)"
 # =============================================================================
-NODE_MAJOR=20
-INSTALLED_MAJOR="$(node --version 2>/dev/null | grep -oP '(?<=v)\d+' || echo 0)"
-if [[ "$INSTALLED_MAJOR" -lt "$NODE_MAJOR" ]]; then
-  info "Installing Node.js ${NODE_MAJOR}..."
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null 2>&1
+INSTALLED_NODE="$(node --version 2>/dev/null | grep -oP '(?<=v)\d+' || echo 0)"
+if [[ "$INSTALLED_NODE" -lt 20 ]]; then
+  info "Installing Node.js 20 via NodeSource..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
   apt-get install -y -qq nodejs
 fi
-success "Node.js $(node --version)"
+ok "Node.js $(node --version)"
 
 # =============================================================================
-step "3 · pnpm"
+banner "STEP 3 · pnpm (package manager)"
 # =============================================================================
 if ! command -v pnpm &>/dev/null; then
-  npm install -g pnpm --quiet
+  npm install -g pnpm@latest --quiet
 fi
-success "pnpm $(pnpm --version)"
+PNPM_BIN="$(which pnpm)"
+ok "pnpm $($PNPM_BIN --version) at $PNPM_BIN"
 
 # =============================================================================
-step "4 · Python dependencies"
+banner "STEP 4 · Python dependencies"
 # =============================================================================
-pip3 install --quiet phonenumbers requests
-success "phonenumbers + requests installed."
+# Use 'python3 -m pip' — works on all Ubuntu versions (pip3 may not exist)
+python3 -m pip install --quiet --break-system-packages phonenumbers requests 2>/dev/null || \
+  python3 -m pip install --quiet phonenumbers requests
+ok "phonenumbers + requests installed."
 
 # =============================================================================
-step "5 · PostgreSQL"
+banner "STEP 5 · PostgreSQL database"
 # =============================================================================
 systemctl enable postgresql --quiet
 systemctl start postgresql
+sleep 1  # give it a moment
 
-# Generate a stable DB password (deterministic from secret so re-runs match)
-DB_PASS="$(echo -n "${ADMIN_SECRET}__db_salt" | sha256sum | cut -c1-32)"
-DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}"
-
-sudo -u postgres psql -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<-SQL
-  DO \$\$
-  BEGIN
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
-      CREATE USER "${DB_USER}" WITH PASSWORD '${DB_PASS}';
-    ELSE
-      ALTER USER "${DB_USER}" WITH PASSWORD '${DB_PASS}';
-    END IF;
-  END
-  \$\$;
+# Create user (idempotent)
+sudo -u postgres psql -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
+    CREATE USER "${DB_USER}" WITH PASSWORD '${DB_PASS}';
+  ELSE
+    ALTER USER "${DB_USER}" WITH PASSWORD '${DB_PASS}';
+  END IF;
+END
+\$\$;
 SQL
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" \
-  | grep -q 1 || sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}"
+
+# Create database if missing
+DB_EXISTS="$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")"
+if [[ "$DB_EXISTS" != "1" ]]; then
+  sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}"
+fi
+
+# Ensure full privileges
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE \"${DB_NAME}\" TO \"${DB_USER}\";" >/dev/null 2>&1
-success "PostgreSQL: database '${DB_NAME}' ready."
+sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO \"${DB_USER}\";" >/dev/null 2>&1
+
+ok "PostgreSQL: database '${DB_NAME}' is ready."
 
 # =============================================================================
-step "6 · Environment files"
+banner "STEP 6 · Secrets and environment"
 # =============================================================================
-ENV_FILE="$PROJECT_DIR/.env.production"
-cat > "$ENV_FILE" <<ENVEOF
+# .env.production — read by rebuild.sh and other helper scripts
+cat > "$PROJECT_DIR/.env.production" <<ENVEOF
 DATABASE_URL=${DATABASE_URL}
 ADMIN_API_SECRET=${ADMIN_SECRET}
 NODE_ENV=production
 PORT=${API_PORT}
 ENVEOF
-chmod 600 "$ENV_FILE"
-chown "$SERVICE_USER:$SERVICE_USER" "$ENV_FILE" 2>/dev/null || true
+chmod 600 "$PROJECT_DIR/.env.production"
 
-# Write the .admin_secret file (server reads this as fallback)
-echo -n "$ADMIN_SECRET" > "$PROJECT_DIR/.admin_secret"
+# .admin_secret — read by the API server as a fallback (server/index.ts)
+printf '%s' "$ADMIN_SECRET" > "$PROJECT_DIR/.admin_secret"
 chmod 600 "$PROJECT_DIR/.admin_secret"
-chown "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR/.admin_secret" 2>/dev/null || true
 
-success "Admin secret saved.  Password = ${ADMIN_SECRET}"
+# Fix ownership
+chown -R "$SVCUSER:$SVCUSER" "$PROJECT_DIR" 2>/dev/null || true
+
+ok "Secrets written (.env.production + .admin_secret)."
 
 # =============================================================================
-step "7 · pnpm install"
+banner "STEP 7 · Install Node.js workspace dependencies"
 # =============================================================================
-info "Installing workspace dependencies..."
-sudo -u "$SERVICE_USER" bash -c "
+info "Running pnpm install (this may take a minute)..."
+sudo -u "$SVCUSER" bash -c "
+  export HOME=\"/home/$SVCUSER\"
   cd '$PROJECT_DIR'
-  pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1
+  '$PNPM_BIN' install --frozen-lockfile 2>&1 || '$PNPM_BIN' install 2>&1
 "
-success "Node dependencies installed."
+ok "Node dependencies installed."
 
 # =============================================================================
-step "8 · Database schema"
+banner "STEP 8 · Apply database schema"
 # =============================================================================
-info "Applying Drizzle schema (push)..."
-sudo -u "$SERVICE_USER" env \
+info "Running drizzle-kit push..."
+sudo -u "$SVCUSER" env \
+  HOME="/home/$SVCUSER" \
   DATABASE_URL="$DATABASE_URL" \
-  bash -c "cd '$PROJECT_DIR' && pnpm --filter @workspace/db run push-force 2>&1"
-success "Schema applied."
+  bash -c "cd '$PROJECT_DIR' && '$PNPM_BIN' --filter @workspace/db run push-force 2>&1"
+ok "Database schema applied."
 
 # =============================================================================
-step "9 · Build API server"
+banner "STEP 9 · Build API server"
 # =============================================================================
-sudo -u "$SERVICE_USER" env \
-  DATABASE_URL="$DATABASE_URL" \
+info "Bundling API server with esbuild..."
+sudo -u "$SVCUSER" env \
+  HOME="/home/$SVCUSER" \
   NODE_ENV=production \
-  bash -c "cd '$PROJECT_DIR' && pnpm --filter @workspace/api-server run build 2>&1"
-success "API server built → artifacts/api-server/dist/"
+  DATABASE_URL="$DATABASE_URL" \
+  bash -c "cd '$PROJECT_DIR' && '$PNPM_BIN' --filter @workspace/api-server run build 2>&1"
+[[ -f "$API_DIST" ]] || die "API server build failed — dist/index.mjs not found."
+ok "API server built → $API_DIST"
 
 # =============================================================================
-step "10 · Build dashboard"
+banner "STEP 10 · Build dashboard (React → static files)"
 # =============================================================================
-# BASE_PATH=/ means the dashboard is served at the root
-sudo -u "$SERVICE_USER" env \
-  PORT="${API_PORT}" \
+info "Building React dashboard..."
+# PORT must be set (vite config validates it), but only affects dev server — not build output.
+# BASE_PATH=/ serves dashboard from the root.
+sudo -u "$SVCUSER" env \
+  HOME="/home/$SVCUSER" \
+  PORT="$API_PORT" \
   BASE_PATH="/" \
   NODE_ENV=production \
-  bash -c "cd '$PROJECT_DIR' && pnpm --filter @workspace/dashboard run build 2>&1"
-DASH_DIST="$PROJECT_DIR/artifacts/dashboard/dist/public"
-success "Dashboard built → $DASH_DIST"
+  bash -c "cd '$PROJECT_DIR' && '$PNPM_BIN' --filter @workspace/dashboard run build 2>&1"
+[[ -d "$DASH_DIST" ]] || die "Dashboard build failed — dist/public/ not found."
+ok "Dashboard built → $DASH_DIST"
 
 # =============================================================================
-step "11 · Nginx (static dashboard + API proxy)"
+banner "STEP 11 · Nginx configuration"
 # =============================================================================
-# Nginx serves the built React dashboard as static files and proxies /api/
-NGINX_CONF="/etc/nginx/sites-available/phone-intelligence"
-cat > "$NGINX_CONF" <<NGINXEOF
+# Nginx serves the React SPA as static files and reverse-proxies /api/ to Node
+NGINX_SITE="/etc/nginx/sites-available/phone-intelligence"
+cat > "$NGINX_SITE" <<NGINX
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
 
-    # ── Static dashboard ────────────────────────────────────────────────────
+    # ── Dashboard (React SPA — static files) ────────────────────────────────
     root ${DASH_DIST};
     index index.html;
 
-    # All unknown routes → index.html (React client-side routing)
     location / {
         try_files \$uri \$uri/ /index.html;
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600";
     }
 
-    # ── API reverse proxy ────────────────────────────────────────────────────
+    # Static assets get long cache
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+    }
+
+    # ── API (reverse proxy to Node.js on port ${API_PORT}) ───────────────────
     location /api/ {
-        proxy_pass         http://127.0.0.1:${API_PORT}/;
+        proxy_pass         http://127.0.0.1:${API_PORT}/api/;
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_set_header   Connection        "";
         proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
     }
 
-    # ── Gzip ─────────────────────────────────────────────────────────────────
+    # ── Gzip compression ─────────────────────────────────────────────────────
     gzip on;
-    gzip_types text/plain text/css application/json application/javascript
-               text/xml application/xml text/javascript;
-}
-NGINXEOF
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml application/json
+               application/javascript application/xml+rss
+               application/atom+xml image/svg+xml;
 
-ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/phone-intelligence
+    # ── Security headers ─────────────────────────────────────────────────────
+    add_header X-Content-Type-Options nosniff;
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header X-XSS-Protection "1; mode=block";
+}
+NGINX
+
+# Enable site, remove default
+ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/phone-intelligence
 rm -f /etc/nginx/sites-enabled/default
-nginx -t
+
+nginx -t 2>&1 || die "Nginx config test failed — check $NGINX_SITE"
 systemctl enable nginx --quiet
 systemctl restart nginx
-success "Nginx configured."
+ok "Nginx configured and running."
 
 # =============================================================================
-step "12 · Supervisor (API server process manager)"
+banner "STEP 12 · systemd service (runs FOREVER, survives reboots)"
 # =============================================================================
-SUP_CONF="/etc/supervisor/conf.d/phone-api.conf"
-cat > "$SUP_CONF" <<SUPEOF
-[program:phone-api]
-command=node --enable-source-maps ${PROJECT_DIR}/artifacts/api-server/dist/index.mjs
-directory=${PROJECT_DIR}
-user=${SERVICE_USER}
-autostart=true
-autorestart=true
-startretries=5
-startsecs=3
-stopwaitsecs=15
-stdout_logfile=/var/log/phone-api.log
-stderr_logfile=/var/log/phone-api-err.log
-stdout_logfile_maxbytes=20MB
-stderr_logfile_maxbytes=10MB
-redirect_stderr=false
-environment=
-  PORT="${API_PORT}",
-  NODE_ENV="production",
-  DATABASE_URL="${DATABASE_URL}",
-  ADMIN_API_SECRET="${ADMIN_SECRET}"
-SUPEOF
+# systemd is the correct tool for lifetime services on Ubuntu.
+# It auto-starts on every boot and auto-restarts within seconds of any crash.
 
-systemctl enable supervisor --quiet
-systemctl start supervisor 2>/dev/null || systemctl restart supervisor
-supervisorctl reread  >/dev/null
-supervisorctl update  >/dev/null
-supervisorctl start phone-api 2>/dev/null || supervisorctl restart phone-api 2>/dev/null || true
-success "Supervisor configured."
+SYSTEMD_UNIT="/etc/systemd/system/phone-api.service"
+cat > "$SYSTEMD_UNIT" <<UNIT
+[Unit]
+Description=Phone Intelligence API Server
+Documentation=https://github.com/your-repo
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=${SVCUSER}
+Group=${SVCUSER}
+WorkingDirectory=${PROJECT_DIR}
+ExecStart=node --enable-source-maps ${API_DIST}
+
+# ── Environment ──────────────────────────────────────────────────────────────
+Environment=NODE_ENV=production
+Environment=PORT=${API_PORT}
+Environment=DATABASE_URL=${DATABASE_URL}
+Environment=ADMIN_API_SECRET=${ADMIN_SECRET}
+
+# ── Restart policy — restarts within 3 s of any crash ───────────────────────
+Restart=always
+RestartSec=3s
+StartLimitBurst=10
+StartLimitIntervalSec=60s
+
+# ── Resource limits ───────────────────────────────────────────────────────────
+LimitNOFILE=65536
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+KillMode=mixed
+KillSignal=SIGTERM
+
+# ── Logging → journald (use: journalctl -u phone-api -f) ─────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=phone-api
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Reload systemd, enable and start the service
+systemctl daemon-reload
+systemctl enable phone-api
+systemctl restart phone-api
+sleep 3  # let it initialise
+
+# Verify it started
+if ! systemctl is-active --quiet phone-api; then
+  warn "Service may have failed to start. Showing journal:"
+  journalctl -u phone-api -n 30 --no-pager || true
+  die "phone-api systemd service did not start — check logs above."
+fi
+ok "phone-api systemd service is running and enabled on boot."
 
 # =============================================================================
-step "13 · Helper scripts"
+banner "STEP 13 · Firewall (ufw)"
 # =============================================================================
-cat > "$PROJECT_DIR/start.sh" <<'EOF'
+if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+  ufw allow 80/tcp  >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
+  ufw allow 22/tcp  >/dev/null 2>&1 || true   # keep SSH open!
+  ok "Firewall: ports 22, 80, 443 open."
+else
+  info "ufw not active — skipping firewall rules."
+fi
+
+# =============================================================================
+banner "STEP 14 · Log rotation"
+# =============================================================================
+cat > /etc/logrotate.d/phone-intelligence <<'LOGROTATE'
+/var/log/phone-api.log
+/var/log/phone-api-err.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+LOGROTATE
+ok "Log rotation configured (14-day retention)."
+
+# =============================================================================
+banner "STEP 15 · Helper scripts"
+# =============================================================================
+
+# status.sh ─────────────────────────────────────────────────────────────────
+cat > "$PROJECT_DIR/status.sh" <<'STATUS'
 #!/usr/bin/env bash
-echo "Starting Phone Intelligence API..."
-supervisorctl start phone-api 2>/dev/null || supervisorctl restart phone-api
-echo "Done. Dashboard: http://localhost   API: http://localhost/api/"
-EOF
-
-cat > "$PROJECT_DIR/stop.sh" <<'EOF'
-#!/usr/bin/env bash
-supervisorctl stop phone-api
-echo "API server stopped."
-EOF
-
-cat > "$PROJECT_DIR/status.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "=== Service Status ==="
-supervisorctl status phone-api
+echo "══ API Service ══════════════════════════════"
+systemctl status phone-api --no-pager -l
 echo ""
-echo "=== Nginx Status ==="
+echo "══ Nginx ════════════════════════════════════"
 systemctl is-active nginx && echo "nginx: running" || echo "nginx: stopped"
-EOF
-
-cat > "$PROJECT_DIR/logs.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "=== API Server (last 80 lines) ==="
-tail -80 /var/log/phone-api.log 2>/dev/null || echo "(no log yet)"
 echo ""
-echo "=== API Server Errors ==="
-tail -30 /var/log/phone-api-err.log 2>/dev/null || echo "(none)"
-EOF
+echo "══ PostgreSQL ═══════════════════════════════"
+systemctl is-active postgresql && echo "postgresql: running" || echo "postgresql: stopped"
+echo ""
+echo "══ Quick health check ═══════════════════════"
+curl -sf http://localhost:8080/api/healthz && echo " ← API healthy" || echo "API not responding"
+STATUS
 
+# logs.sh ───────────────────────────────────────────────────────────────────
+cat > "$PROJECT_DIR/logs.sh" <<'LOGS'
+#!/usr/bin/env bash
+echo "Streaming logs (Ctrl+C to stop)..."
+journalctl -u phone-api -f --no-pager
+LOGS
+
+# rebuild.sh ────────────────────────────────────────────────────────────────
+PNPM_PATH="$PNPM_BIN"
 cat > "$PROJECT_DIR/rebuild.sh" <<REBUILD
 #!/usr/bin/env bash
-# Re-build and restart after code changes
+# Rebuild everything and restart services after code changes.
 set -euo pipefail
+source "\$(dirname "\$0")/.env.production"
+
 cd "$PROJECT_DIR"
-echo "Building API server..."
-DATABASE_URL="$DATABASE_URL" NODE_ENV=production \\
-  pnpm --filter @workspace/api-server run build
-echo "Building dashboard..."
-PORT="${API_PORT}" BASE_PATH="/" NODE_ENV=production \\
-  pnpm --filter @workspace/dashboard run build
-echo "Restarting API server..."
-supervisorctl restart phone-api
-echo "Reloading Nginx (dashboard static files updated)..."
-systemctl reload nginx
-echo "Done."
+echo "[1/4] Installing dependencies..."
+"$PNPM_PATH" install
+
+echo "[2/4] Applying DB schema..."
+DATABASE_URL="\$DATABASE_URL" "$PNPM_PATH" --filter @workspace/db run push-force
+
+echo "[3/4] Building API server..."
+NODE_ENV=production DATABASE_URL="\$DATABASE_URL" "$PNPM_PATH" --filter @workspace/api-server run build
+
+echo "[4/4] Building dashboard..."
+PORT="$API_PORT" BASE_PATH="/" NODE_ENV=production "$PNPM_PATH" --filter @workspace/dashboard run build
+
+echo "Restarting services..."
+systemctl restart phone-api
+systemctl reload  nginx
+echo "Done! All services updated."
 REBUILD
 
-chmod +x "$PROJECT_DIR/start.sh" "$PROJECT_DIR/stop.sh" \
-         "$PROJECT_DIR/status.sh" "$PROJECT_DIR/logs.sh" \
-         "$PROJECT_DIR/rebuild.sh"
-chown "$SERVICE_USER:$SERVICE_USER" \
-  "$PROJECT_DIR/start.sh" "$PROJECT_DIR/stop.sh" \
-  "$PROJECT_DIR/status.sh" "$PROJECT_DIR/logs.sh" \
+chmod +x "$PROJECT_DIR/status.sh" "$PROJECT_DIR/logs.sh" "$PROJECT_DIR/rebuild.sh"
+chown "$SVCUSER:$SVCUSER" \
+  "$PROJECT_DIR/status.sh" \
+  "$PROJECT_DIR/logs.sh" \
   "$PROJECT_DIR/rebuild.sh" 2>/dev/null || true
 
-success "Helper scripts created."
+ok "Helper scripts ready."
 
 # =============================================================================
-step "14 · Health check"
+banner "STEP 16 · Final health check"
 # =============================================================================
-sleep 4
+sleep 3
+SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")"
 API_OK=false
-if curl -sf "http://localhost:${API_PORT}/" >/dev/null 2>&1 || \
-   curl -sf "http://localhost:${API_PORT}/health" >/dev/null 2>&1; then
+DASH_OK=false
+
+if curl -sf "http://localhost:${API_PORT}/api/healthz" >/dev/null 2>&1; then
   API_OK=true
 fi
-
-NGINX_OK=false
-curl -sf "http://localhost/" >/dev/null 2>&1 && NGINX_OK=true
-
-# =============================================================================
-# DONE
-# =============================================================================
-echo ""
-echo -e "${GREEN}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}${BOLD}║       Phone Intelligence Platform — Ready!                   ║${NC}"
-echo -e "${GREEN}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  ${BOLD}Dashboard:${NC}      http://$(hostname -I | awk '{print $1}')  (port 80)"
-echo -e "  ${BOLD}API Server:${NC}     http://$(hostname -I | awk '{print $1}')/api/"
-echo -e "  ${BOLD}Admin login:${NC}    ${YELLOW}${ADMIN_SECRET}${NC}"
-echo ""
-echo -e "  ${BOLD}Database:${NC}       $DATABASE_URL"
-echo ""
-echo -e "  ${BOLD}Commands:${NC}"
-echo -e "    sudo ./start.sh     — start services"
-echo -e "    sudo ./stop.sh      — stop services"
-echo -e "    sudo ./status.sh    — check status"
-echo -e "    sudo ./logs.sh      — view logs"
-echo -e "    sudo ./rebuild.sh   — rebuild + restart after code changes"
-echo ""
-if [[ "$API_OK" == "true" ]]; then
-  success "API server is up on port ${API_PORT}"
-else
-  warn "API server is still starting up. Run: sudo ./logs.sh"
+if curl -sf "http://localhost/" >/dev/null 2>&1; then
+  DASH_OK=true
 fi
-if [[ "$NGINX_OK" == "true" ]]; then
-  success "Nginx / dashboard is serving on port 80"
+
+# =============================================================================
+#  ALL DONE
+# =============================================================================
+echo ""
+echo -e "${GRN}${BLD}╔══════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GRN}${BLD}║    Phone Intelligence Platform — Installation Complete!          ║${NC}"
+echo -e "${GRN}${BLD}╚══════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${BLD}Dashboard:${NC}     http://${SERVER_IP}/"
+echo -e "  ${BLD}API:${NC}           http://${SERVER_IP}/api/"
+echo -e "  ${BLD}Health check:${NC}  http://${SERVER_IP}/api/healthz"
+echo ""
+echo -e "  ${BLD}Admin password:${NC} ${YLW}${ADMIN_SECRET}${NC}  (enter in dashboard login)"
+echo ""
+echo -e "  ${BLD}Database:${NC}      ${DATABASE_URL}"
+echo ""
+echo -e "  ${BLD}Manage services:${NC}"
+echo -e "    systemctl status  phone-api    — check status"
+echo -e "    systemctl restart phone-api    — restart API"
+echo -e "    systemctl stop    phone-api    — stop API"
+echo -e "    journalctl -u phone-api -f     — live API logs"
+echo -e "    systemctl reload  nginx        — reload Nginx"
+echo ""
+echo -e "  ${BLD}Helper scripts (run from project dir):${NC}"
+echo -e "    sudo ./status.sh     — full status of all services"
+echo -e "    sudo ./logs.sh       — stream live API logs"
+echo -e "    sudo ./rebuild.sh    — rebuild + restart after code changes"
+echo ""
+echo -e "  ${BLD}Services auto-start on every reboot.${NC}"
+echo -e "  ${BLD}API auto-restarts within 3 s if it crashes.${NC}"
+echo ""
+
+if [[ "$API_OK" == "true" ]]; then
+  ok "API server is responding at http://${SERVER_IP}/api/healthz"
 else
-  warn "Nginx may still be starting. Check: systemctl status nginx"
+  warn "API not responding yet — run:  journalctl -u phone-api -n 50"
+fi
+if [[ "$DASH_OK" == "true" ]]; then
+  ok "Dashboard is live at http://${SERVER_IP}/"
+else
+  warn "Nginx not responding — run:  systemctl status nginx"
 fi
 echo ""
