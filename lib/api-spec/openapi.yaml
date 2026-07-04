@@ -1,0 +1,620 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.2.0
+  description: Phone Number Intelligence Platform API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: phone
+    description: Phone number intelligence lookups
+  - name: admin
+    description: API key administration
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /phone/lookup:
+    get:
+      operationId: phoneLookup
+      tags: [phone]
+      summary: Look up phone number intelligence
+      description: >
+        Runs an offline phone number intelligence lookup. Returns line type,
+        carrier classification, geolocation, fraud score, HLR status estimate,
+        DNC proxy check, RND risk assessment, porting heuristic, and pattern
+        analysis. Requires an API key in the X-API-Key header.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: number
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "+14155552671"
+          description: Phone number in international format (E.164 preferred)
+      responses:
+        "200":
+          description: Lookup result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhoneLookupResult"
+        "400":
+          description: Missing or invalid number parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /phone/batch:
+    post:
+      operationId: phoneBatchLookup
+      tags: [phone]
+      summary: Batch phone number lookup
+      description: >
+        Look up up to 100 phone numbers in a single request. Returns an array
+        of results in the same order as the input. Each entry includes the
+        number plus the full lookup result or an error. Requires an API key.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchLookupRequest"
+      responses:
+        "200":
+          description: Batch lookup results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchLookupResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /phone/sources:
+    get:
+      operationId: getPhoneSources
+      tags: [phone]
+      summary: Get data source status
+      description: >
+        Returns the status of all community spam/abuse datasets used for DNC
+        and fraud scoring, including whether each file is present and when it
+        was last downloaded.
+      responses:
+        "200":
+          description: Data source status list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DataSourceStatus"
+  /admin/keys:
+    post:
+      operationId: createApiKey
+      tags: [admin]
+      summary: Create a new API key
+      description: Requires the X-Admin-Secret header to match the server's ADMIN_API_SECRET.
+      security:
+        - AdminSecretAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+      responses:
+        "201":
+          description: Created API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyRecord"
+        "401":
+          description: Invalid admin secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      operationId: listApiKeys
+      tags: [admin]
+      summary: List all API keys
+      description: Requires the X-Admin-Secret header to match the server's ADMIN_API_SECRET.
+      security:
+        - AdminSecretAuth: []
+      responses:
+        "200":
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKeyRecord"
+        "401":
+          description: Invalid admin secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /admin/keys/{id}/revoke:
+    post:
+      operationId: revokeApiKey
+      tags: [admin]
+      summary: Revoke an API key
+      description: Requires the X-Admin-Secret header to match the server's ADMIN_API_SECRET.
+      security:
+        - AdminSecretAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Revoked API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyRecord"
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid admin secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    AdminSecretAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Secret
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    HlrStatus:
+      type: object
+      description: >
+        Heuristic HLR (Home Location Register) reachability estimate.
+        NOT a live SS7/HLR query — requires paid telecom gateway for real HLR.
+      properties:
+        method:
+          type: string
+          description: Always "heuristic" for offline analysis
+        reachable_estimate:
+          type: boolean
+          description: Best-effort estimate of whether the number is reachable
+        confidence:
+          type: string
+          description: "Confidence level: very_low, low, medium, high"
+        signals:
+          type: array
+          items:
+            type: string
+          description: Observable signals used in the estimate
+        disclaimer:
+          type: string
+          description: Reminder that this is a heuristic, not live HLR
+      required:
+        - method
+        - reachable_estimate
+        - confidence
+        - signals
+        - disclaimer
+
+    CarrierType:
+      type: object
+      description: Carrier network type classification
+      properties:
+        type:
+          type: string
+          description: "MNO, MVNO, CLEC, ILEC, VoIP/OTT, Toll-Free, Premium Rate, Mobile, Wireline, Unknown"
+        confidence:
+          type: string
+          description: "authoritative, heuristic, low"
+        description:
+          type: string
+          description: Human-readable explanation of the classification
+        matched_keyword:
+          type: string
+          nullable: true
+          description: The carrier keyword that triggered the VoIP classification, if applicable
+      required:
+        - type
+        - confidence
+        - description
+
+    PortedEstimate:
+      type: object
+      description: >
+        Heuristic LNP (Local Number Portability) estimate.
+        True porting status requires a live NPAC database query.
+      properties:
+        method:
+          type: string
+        ported_estimate:
+          type: boolean
+          nullable: true
+        confidence:
+          type: string
+        signals:
+          type: array
+          items:
+            type: string
+        disclaimer:
+          type: string
+      required:
+        - method
+        - ported_estimate
+        - confidence
+        - signals
+        - disclaimer
+
+    RndRisk:
+      type: object
+      description: >
+        Heuristic reassignment risk estimate. True RND requires FCC
+        Reassigned Numbers Database paid subscription (reassigned.us).
+      properties:
+        method:
+          type: string
+        risk_level:
+          type: string
+          description: "low, medium, high, unknown"
+        risk_score:
+          type: integer
+          nullable: true
+        confidence:
+          type: string
+        risk_factors:
+          type: array
+          items:
+            type: string
+        disclaimer:
+          type: string
+      required:
+        - method
+        - risk_level
+        - confidence
+        - risk_factors
+        - disclaimer
+
+    PhoneLookupResult:
+      type: object
+      description: >
+        Complete phone intelligence result.
+        Data source labels: "authoritative" = phonenumbers library (Google libphonenumber).
+        "community" = community spam/abuse datasets. "heuristic" = derived logic.
+        "unavailable" = requires live carrier/breach/HLR/RND access (always null here).
+      properties:
+        # Authoritative
+        valid:
+          type: boolean
+          description: Valid, dialable E.164 number per ITU standards
+        possible:
+          type: boolean
+          description: Number length/format is possible for its region (looser than valid)
+        e164:
+          type: string
+          nullable: true
+          description: E.164 formatted number (e.g. +14155552671)
+        national_format:
+          type: string
+          nullable: true
+          description: National format (e.g. (415) 555-2671 for US)
+        international_format:
+          type: string
+          nullable: true
+          description: International format (e.g. +1 415-555-2671)
+        line_type:
+          type: string
+          description: "Fixed Line, Mobile, VoIP, Toll-Free, Premium Rate, etc."
+        line_type_source:
+          type: string
+          description: "phonenumbers (authoritative) or heuristic"
+        voip:
+          type: boolean
+          description: VoIP line (authoritative from phonenumbers or carrier heuristic)
+        carrier:
+          type: string
+          description: >
+            Original network carrier (authoritative for most international numbers;
+            often empty for US mobile due to number portability — LNP prevents
+            offline carrier identification post-port)
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2 country code
+        city:
+          type: string
+          description: City or geographic area (from phonenumbers geocoder)
+        region:
+          type: string
+          description: State, province, or region
+        timezones:
+          type: array
+          items:
+            type: string
+          description: IANA timezone identifiers
+        # Heuristic / derived
+        active:
+          type: boolean
+          description: >
+            Best-effort heuristic — valid + not in community abuse lists + fraud score < 60.
+            NOT a live reachability check.
+        fraud_score:
+          type: number
+          description: Risk score 0–100
+        fraud_reasons:
+          type: array
+          items:
+            type: string
+        recent_abuse:
+          type: boolean
+          description: Found in community abuse datasets
+        spammer:
+          type: boolean
+        spam:
+          type: boolean
+        spam_source_count:
+          type: integer
+          description: Number of separate community datasets that flagged this number
+        spam_sources:
+          type: array
+          items:
+            type: string
+          description: IDs of datasets that flagged this number
+        prepaid:
+          type: boolean
+          description: Heuristic — carrier name matches known prepaid/MVNO brands
+        risky:
+          type: boolean
+          description: True if fraud_score >= 75 or in abuse lists or premium-rate
+        dnc:
+          type: boolean
+          description: Community-proxy DNC flag (NOT the official FTC Do Not Call Registry)
+        dnc_source:
+          type: string
+        dnc_source_count:
+          type: integer
+          description: Number of community datasets contributing to DNC determination
+        pattern_flags:
+          type: array
+          items:
+            type: string
+        # Structured heuristic assessments
+        hlr_status:
+          $ref: "#/components/schemas/HlrStatus"
+        carrier_type:
+          $ref: "#/components/schemas/CarrierType"
+        ported_estimate:
+          $ref: "#/components/schemas/PortedEstimate"
+        rnd_risk:
+          $ref: "#/components/schemas/RndRisk"
+        # Unavailable offline
+        name:
+          type: string
+          nullable: true
+          description: "Subscriber CNAM — null: requires live CNAM carrier lookup"
+        associated_emails:
+          type: array
+          items:
+            type: string
+          description: "Associated emails — empty: requires data enrichment service"
+        user_activity:
+          type: string
+          nullable: true
+          description: "Activity level — null: requires live HLR/SS7"
+        leaked_online:
+          type: boolean
+          nullable: true
+          description: "In breach databases — null: requires HIBP or similar"
+        reassigned:
+          type: boolean
+          nullable: true
+          description: "Number reassigned — null: requires FCC RND paid subscription"
+      required:
+        - valid
+        - possible
+        - e164
+        - national_format
+        - international_format
+        - line_type
+        - line_type_source
+        - voip
+        - carrier
+        - country
+        - city
+        - region
+        - timezones
+        - active
+        - fraud_score
+        - fraud_reasons
+        - recent_abuse
+        - spammer
+        - spam
+        - spam_source_count
+        - spam_sources
+        - prepaid
+        - risky
+        - dnc
+        - dnc_source
+        - dnc_source_count
+        - pattern_flags
+        - hlr_status
+        - carrier_type
+        - ported_estimate
+        - rnd_risk
+        - name
+        - associated_emails
+        - user_activity
+        - leaked_online
+        - reassigned
+
+    BatchLookupRequest:
+      type: object
+      properties:
+        numbers:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 100
+          description: Array of phone numbers to look up (max 100)
+      required:
+        - numbers
+
+    BatchLookupItem:
+      type: object
+      properties:
+        number:
+          type: string
+          description: The input number as provided
+        result:
+          $ref: "#/components/schemas/PhoneLookupResult"
+          nullable: true
+        error:
+          type: string
+          nullable: true
+          description: Error message if this number failed
+      required:
+        - number
+
+    BatchLookupResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchLookupItem"
+        total:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+      required:
+        - results
+        - total
+        - succeeded
+        - failed
+
+    DataSourceStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        url:
+          type: string
+        filename:
+          type: string
+        present:
+          type: boolean
+          description: Whether the local file exists
+        size_bytes:
+          type: integer
+        last_downloaded:
+          type: string
+          nullable: true
+          description: ISO 8601 timestamp of last successful download
+      required:
+        - id
+        - label
+        - url
+        - filename
+        - present
+        - size_bytes
+        - last_downloaded
+
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          description: Human-readable label for who/what this key is for
+      required:
+        - label
+
+    ApiKeyRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        key:
+          type: string
+        label:
+          type: string
+        active:
+          type: boolean
+        requestCount:
+          type: integer
+        createdAt:
+          type: string
+        lastUsedAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - key
+        - label
+        - active
+        - requestCount
+        - createdAt

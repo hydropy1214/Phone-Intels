@@ -1,0 +1,1 @@
+- [Orval zod schema naming](orval-zod-naming.md) — generated zod validators are named per-operation (e.g. `PhoneLookupResponse`), not by the OpenAPI component schema name.
