@@ -48,3 +48,28 @@ Thumbs.db
 .cache/
 .local/
 .git-backup/
+.agents/
+.replit
+.replitignore
+
+# Secrets & environment files
+.env
+.env.*
+.admin_secret
+*.secret
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+uv.lock
+
+# Logs
+*.log
+
+# Uploaded/generated assets
+attached_assets/
+
+# macOS
+.DS_Store
