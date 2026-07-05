@@ -5,6 +5,37 @@ const PHONE_TOOL_PATH = path.resolve(process.cwd(), "..", "..", "phone-tool", "p
 const PYTHON_BIN = process.env.PHONE_TOOL_PYTHON || "python3";
 const TIMEOUT_MS = 30_000;
 
+// ── In-memory result cache ────────────────────────────────────────────────────
+// Phone number metadata changes rarely; cache individual lookups for 1 hour.
+// This eliminates the Python subprocess cold-start overhead on repeated queries.
+const CACHE_TTL_MS = 60 * 60 * 1_000; // 1 hour
+const MAX_CACHE_SIZE = 10_000;         // ~10 MB max at ~1 KB/result
+
+interface CacheEntry {
+  result: PhoneLookupResult;
+  expiresAt: number;
+}
+
+const lookupCache = new Map<string, CacheEntry>();
+
+function cacheGet(key: string): PhoneLookupResult | null {
+  const entry = lookupCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { lookupCache.delete(key); return null; }
+  return entry.result;
+}
+
+function cacheSet(key: string, result: PhoneLookupResult): void {
+  // Evict oldest entry when at capacity (Map preserves insertion order)
+  if (lookupCache.size >= MAX_CACHE_SIZE) {
+    const oldest = lookupCache.keys().next().value;
+    if (oldest !== undefined) lookupCache.delete(oldest);
+  }
+  lookupCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 export interface HlrStatus {
   method: string;
   reachable_estimate: boolean;
@@ -116,6 +147,8 @@ export interface DataSourceStatus {
 
 export class PhoneLookupError extends Error {}
 
+// ── Subprocess ────────────────────────────────────────────────────────────────
+
 function spawnLookup(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(PYTHON_BIN, [PHONE_TOOL_PATH, ...args], {
@@ -151,7 +184,14 @@ function spawnLookup(args: string[]): Promise<string> {
   });
 }
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
 export async function lookupPhoneNumber(number: string): Promise<PhoneLookupResult> {
+  // Normalize key: E.164 lowercase, strip spaces
+  const cacheKey = number.trim().replace(/\s+/g, "");
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
   const stdout = await spawnLookup([number, "--quiet"]);
   const lastLine = stdout.trim().split("\n").filter(Boolean).pop() ?? "";
   try {
@@ -159,6 +199,7 @@ export async function lookupPhoneNumber(number: string): Promise<PhoneLookupResu
     if (parsed.error) {
       throw new PhoneLookupError(parsed.error);
     }
+    cacheSet(cacheKey, parsed);
     return parsed;
   } catch (err) {
     if (err instanceof PhoneLookupError) throw err;

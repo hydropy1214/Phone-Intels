@@ -10,8 +10,8 @@ line type · carrier · geolocation · fraud score · spam/DNC check · VoIP det
 ## Quick Start (Ubuntu Server)
 
 ```bash
-git clone https://github.com/your-username/phone-intelligence.git
-cd phone-intelligence
+git clone https://github.com/hydropy1214/Phone-Intels.git
+cd Phone-Intels
 chmod +x setup.sh
 sudo ./setup.sh
 ```
