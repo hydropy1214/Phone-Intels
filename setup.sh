@@ -227,6 +227,19 @@ sudo -u "$SVCUSER" env \
   NODE_ENV=production \
   bash -c "cd '$PROJECT_DIR' && '$PNPM_BIN' --filter @workspace/dashboard run build 2>&1"
 [[ -d "$DASH_DIST" ]] || die "Dashboard build failed — $DASH_DIST not found."
+
+# Ensure nginx (www-data) can traverse the path to the static files.
+# If the project lives under /root, the directory has 700 by default which
+# blocks the nginx worker process.  Grant execute (traverse) on every parent
+# directory up to (but not including) /.
+_dir="$PROJECT_DIR"
+while [[ "$_dir" != "/" && "$_dir" != "" ]]; do
+  chmod o+x "$_dir" 2>/dev/null || true
+  _dir="$(dirname "$_dir")"
+done
+# Make all built static files world-readable.
+chmod -R o+rX "$DASH_DIST"
+
 ok "Dashboard built → $DASH_DIST"
 
 # =============================================================================
