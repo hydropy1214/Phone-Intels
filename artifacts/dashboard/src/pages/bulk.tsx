@@ -193,7 +193,7 @@ const CONCURRENCY = 10;
 
 export function Bulk() {
   const { data: keys } = useListApiKeys();
-  const activeKey = keys?.find(k => k.active);
+  const activeKey = keys?.find((k: any) => k.active);
 
   // Keep API key in sync without side-effecting during render
   useEffect(() => {

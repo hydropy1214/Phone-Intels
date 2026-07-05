@@ -18,9 +18,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
     href === '/' ? location === '/' : location.startsWith(href);
 
   return (
-    <div className="min-h-[100dvh] flex flex-col md:flex-row bg-background text-foreground relative z-10">
+    <div className="min-h-[100dvh] flex flex-col md:flex-row bg-background text-foreground">
 
-      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+      {/* ── Sidebar ── */}
       <aside className="w-full md:w-60 flex-shrink-0 border-b md:border-b-0 md:border-r border-border bg-card/40 backdrop-blur-sm flex flex-col">
 
         {/* Brand */}
@@ -78,8 +78,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* ── Main content ─────────────────────────────────────────────────── */}
-      <main className="flex-1 overflow-y-auto min-h-0">
+      {/* ── Main content ── */}
+      <main className="flex-1 overflow-y-auto">
         <div className="max-w-[1400px] mx-auto px-6 md:px-8 py-6 md:py-8">
           {children}
         </div>

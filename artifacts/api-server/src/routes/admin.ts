@@ -55,8 +55,8 @@ router.post("/admin/keys/:id/revoke", requireAdminSecret, async (req, res) => {
 
 router.get("/admin/stats", requireAdminSecret, async (_req, res) => {
   const keys = await db.select().from(apiKeysTable);
-  const totalRequests = keys.reduce((sum, k) => sum + k.requestCount, 0);
-  const activeKeys = keys.filter(k => k.active).length;
+  const totalRequests = (keys as any[]).reduce((sum: number, k: any) => sum + k.requestCount, 0);
+  const activeKeys = (keys as any[]).filter((k: any) => k.active).length;
   const sorted = [...keys].sort((a, b) => b.requestCount - a.requestCount);
   res.json({
     totalKeys: keys.length,
@@ -67,7 +67,7 @@ router.get("/admin/stats", requireAdminSecret, async (_req, res) => {
     topKey: sorted[0]
       ? { id: sorted[0].id, label: sorted[0].label, requestCount: sorted[0].requestCount }
       : null,
-    keys: keys.map(k => ({
+    keys: (keys as any[]).map((k: any) => ({
       id: k.id,
       label: k.label,
       requestCount: k.requestCount,

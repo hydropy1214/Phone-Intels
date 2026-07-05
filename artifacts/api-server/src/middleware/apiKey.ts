@@ -21,7 +21,7 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
   db.update(apiKeysTable)
     .set({ requestCount: sql`${apiKeysTable.requestCount} + 1`, lastUsedAt: new Date() })
     .where(eq(apiKeysTable.id, record.id))
-    .catch((err) => {
+    .catch((err: unknown) => {
       req.log.error({ err }, "failed to update api key usage stats");
     });
 
