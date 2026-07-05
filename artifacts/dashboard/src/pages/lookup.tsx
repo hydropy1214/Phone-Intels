@@ -271,7 +271,7 @@ function LookupRow({ number, onRemove, onData }: {
   onData: (d: any) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { data, isError, isFetching } = usePhoneLookup(
+  const { data, isError, error, isFetching } = usePhoneLookup(
     { number },
     { query: { queryKey: getPhoneLookupQueryKey({ number }), enabled: true, retry: false } }
   );
@@ -319,8 +319,14 @@ function LookupRow({ number, onRemove, onData }: {
           </td>
         ) : isError || !data ? (
           <td colSpan={6} className="px-3 py-3">
-            <span className="font-mono text-xs text-destructive">
-              {isError ? 'Lookup failed — use E.164 format, e.g. +14155552671' : '—'}
+            <span className="font-mono text-xs text-destructive" title={String((error as any)?.message ?? '')}>
+              {isError
+                ? (() => {
+                    const msg = (error as any)?.message ?? '';
+                    const clean = msg.replace(/^HTTP \d+ [^:]+:\s*/i, '');
+                    return clean || 'Lookup failed';
+                  })()
+                : '—'}
             </span>
           </td>
         ) : (

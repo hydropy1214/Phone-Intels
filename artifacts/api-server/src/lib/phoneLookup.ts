@@ -1,7 +1,14 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const PHONE_TOOL_PATH = path.resolve(process.cwd(), "..", "..", "phone-tool", "phone_tool.py");
+// Resolve relative to the *built bundle's* location, not process.cwd().
+// process.cwd() differs between dev (artifacts/api-server/) and the systemd
+// production service (project root), so __dirname from import.meta.url is the
+// only reliable anchor in both environments.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// dist/index.mjs → ../../.. → project root → phone-tool/phone_tool.py
+const PHONE_TOOL_PATH = path.resolve(__dirname, "..", "..", "..", "phone-tool", "phone_tool.py");
 const PYTHON_BIN = process.env.PHONE_TOOL_PYTHON || "python3";
 const TIMEOUT_MS = 30_000;
 
