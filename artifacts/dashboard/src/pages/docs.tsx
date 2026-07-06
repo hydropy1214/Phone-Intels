@@ -81,6 +81,7 @@ const SOURCE_COLORS: Record<string, string> = {
   authoritative: 'text-green-400 border-green-400/30',
   heuristic: 'text-amber-400 border-amber-400/30',
   community: 'text-purple-400 border-purple-400/30',
+  'community + gov': 'text-purple-400 border-purple-400/30',
   'NANPA/LCG': 'text-blue-400 border-blue-400/30',
 };
 function Field({ name, type, source, desc }: { name: string; type: string; source?: string; desc: string }) {
@@ -630,7 +631,7 @@ curl -X POST "${apiBase}/admin/keys/42/revoke" \\
               <Field name="risk_score"          type="number 0–100" source="heuristic"     desc="Composite risk score. Higher = more suspicious. Factors: spam hits, VoIP, premium rate, pattern flags, area code risk." />
               <Field name="fraud_score"         type="number 0–100" source="heuristic"     desc="Alias of risk_score. Included for API compatibility." />
               <Field name="risky"               type="boolean"      source="heuristic"     desc="True if risk_score ≥ 75, in abuse lists, or is a premium rate number" />
-              <Field name="spam"                type="boolean"      source="community"     desc="Found in community abuse/spam datasets (jwoertink/blocked-numbers, Oros42/phone-blacklist)" />
+              <Field name="spam"                type="boolean"      source="community + gov" desc="Found in community abuse/spam datasets (jwoertink/blocked-numbers, Oros42/phone-blacklist) or the FCC's own Consumer Complaints database (real Unwanted Calls / Robocalls complaints, no API key required)" />
               <Field name="recent_abuse"        type="boolean"      source="community"     desc="Subset of spam — flagged in more recent community reports" />
               <Field name="dnc"                 type="boolean"      source="community"     desc="Community-proxy DNC flag. NOT the official FTC Do Not Call Registry (that requires paid access)." />
               <Field name="voip"                type="boolean"      source="heuristic"     desc="VoIP/OTT line detected via phonenumbers type, known VoIP NXX blocks, or carrier name matching" />

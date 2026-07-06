@@ -10,6 +10,9 @@ Data Honesty Policy
   authoritative   phonenumbers lib  → valid, possible, line_type, voip, carrier,
                                        country, city, region, timezones, formats
   community       spam/abuse lists  → spam, recent_abuse, spammer, dnc
+  government      FCC complaints    → spam (real "Unwanted Calls"/"Robocalls"
+                                       complaints filed with the FCC — genuine
+                                       consumer reports, free + no API key)
   heuristic       derived logic     → fraud_score, hlr_status, carrier_type,
                                        ported_estimate, rnd_risk, prepaid
   unavailable     requires live API → name (CNAM), user_activity (SS7/HLR),
@@ -26,8 +29,10 @@ DNC (Do Not Call)
 ─────────────────
   The official FTC DNC Registry has no free bulk download (donotcall.gov, paid
   telemarketer access only). This tool uses community-maintained abuse/spam
-  datasets as a proxy. Numbers in those lists are likely DNC violators but
-  this is NOT the official registry.
+  datasets, plus the FCC's own public Consumer Complaints dataset (real
+  "Unwanted Calls"/"Robocalls" complaints, freely queryable with no API key),
+  as a proxy. Numbers surfaced this way are likely DNC violators, but this is
+  NOT the official registry.
 
 RND (Reassigned Numbers Database)
 ──────────────────────────────────
@@ -261,6 +266,39 @@ SPAM_SOURCES = {
         "Oros42/phone-blacklist",
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Government complaint data sources
+# ---------------------------------------------------------------------------
+# The official FTC Do Not Call Registry and FCC Reassigned Numbers Database
+# are paid-access only (see module docstring). However, the FCC's own
+# Consumer Complaints dataset — real, individual "Unwanted Calls" / "Robocalls"
+# complaints filed by consumers, including the reported caller ID number — IS
+# freely and fully queryable with no API key and no rate limit via the FCC's
+# public Socrata Open Data API:
+#   https://opendata.fcc.gov/Consumer/CGB-Consumer-Complaints-Data/3xyp-aqkj
+# This is real government complaint data (not a community-curated list), so
+# it is tracked separately and labeled distinctly in results/status output.
+FCC_COMPLAINTS_ENDPOINT = "https://opendata.fcc.gov/resource/3xyp-aqkj.json"
+FCC_COMPLAINTS_FILENAME = "fcc_complaints.csv"
+FCC_COMPLAINTS_LABEL = "FCC Consumer Complaints (Unwanted Calls / Robocalls)"
+FCC_COMPLAINTS_ISSUES = ("Unwanted Calls", "Robocalls")
+FCC_COMPLAINTS_PAGE_SIZE = 1000
+# Cap total records fetched per update so a refresh stays fast and bounded.
+# Raise this (or call --update repeatedly) to pull deeper history over time.
+FCC_COMPLAINTS_MAX_RECORDS = 25000
+
+# API-backed sources (queried/paginated rather than a single static file).
+API_SOURCES = {
+    "fcc_complaints": (
+        FCC_COMPLAINTS_ENDPOINT,
+        FCC_COMPLAINTS_FILENAME,
+        FCC_COMPLAINTS_LABEL,
+    ),
+}
+
+# Every trackable data source (used for status/listing purposes).
+ALL_SOURCES = {**SPAM_SOURCES, **API_SOURCES}
 
 # ---------------------------------------------------------------------------
 # Carrier type classification
@@ -804,13 +842,84 @@ def _download(url: str, dest_path: str, quiet: bool = False) -> bool:
         return False
 
 
+def _download_fcc_complaints(dest_path: str, quiet: bool = False) -> bool:
+    """
+    Pull real consumer complaint records from the FCC's public Socrata Open
+    Data API (no API key, no rate limit) filtered to "Unwanted Calls" and
+    "Robocalls" complaint types, and write the reported caller ID numbers to
+    a local CSV cache. Paginates until FCC_COMPLAINTS_MAX_RECORDS is reached
+    or the source is exhausted.
+    """
+    if requests is None:
+        return False
+
+    issue_clause = " OR ".join(f"issue='{issue}'" for issue in FCC_COMPLAINTS_ISSUES)
+    numbers: list[str] = []
+    offset = 0
+    try:
+        while offset < FCC_COMPLAINTS_MAX_RECORDS:
+            params = {
+                "$select": "caller_id_number,issue,issue_date",
+                "$where": f"caller_id_number IS NOT NULL AND ({issue_clause})",
+                "$limit": FCC_COMPLAINTS_PAGE_SIZE,
+                "$offset": offset,
+            }
+            resp = requests.get(
+                FCC_COMPLAINTS_ENDPOINT,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+                headers={"User-Agent": USER_AGENT},
+            )
+            if resp.status_code != 200:
+                if not quiet:
+                    print(f"  [skip] HTTP {resp.status_code} for FCC complaints (offset={offset})")
+                break
+            rows = resp.json()
+            if not rows:
+                break
+            for row in rows:
+                num = row.get("caller_id_number")
+                if num and num != "None" and _is_plausible_fcc_number(num):
+                    numbers.append(num)
+            offset += FCC_COMPLAINTS_PAGE_SIZE
+            if len(rows) < FCC_COMPLAINTS_PAGE_SIZE:
+                break
+    except Exception as e:
+        if not quiet:
+            print(f"  [skip] FCC complaints fetch error: {e}")
+
+    if not numbers:
+        return False
+
+    unique_numbers = sorted(set(numbers))
+    with open(dest_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["phone_number"])
+        for num in unique_numbers:
+            writer.writerow([num])
+
+    if not quiet:
+        print(
+            f"  [ok]   FCC consumer complaints → {os.path.relpath(dest_path, SCRIPT_DIR)} "
+            f"({len(unique_numbers):,} unique numbers from {len(numbers):,} complaints)"
+        )
+    return True
+
+
+# Custom downloaders for sources that need querying/pagination rather than a
+# single static file GET. Keyed by ALL_SOURCES key.
+CUSTOM_DOWNLOADERS = {
+    "fcc_complaints": _download_fcc_complaints,
+}
+
+
 def update_data(force: bool = False, quiet: bool = False):
     ensure_data_dir()
     if not quiet:
-        print(f"Downloading community spam/abuse datasets into {DATA_DIR} ...")
+        print(f"Downloading community + government spam/abuse datasets into {DATA_DIR} ...")
 
     downloaded = 0
-    for key, (url, filename, _label) in SPAM_SOURCES.items():
+    for key, (url, filename, _label) in ALL_SOURCES.items():
         if filename is None:
             continue
         dest = os.path.join(DATA_DIR, filename)
@@ -819,7 +928,12 @@ def update_data(force: bool = False, quiet: bool = False):
                 print(f"  [cached] {filename}")
             downloaded += 1
             continue
-        if _download(url, dest, quiet=quiet):
+        downloader = CUSTOM_DOWNLOADERS.get(key)
+        if downloader is not None:
+            ok = downloader(dest, quiet=quiet)
+        else:
+            ok = _download(url, dest, quiet=quiet)
+        if ok:
             downloaded += 1
 
     metadata = {
@@ -836,8 +950,8 @@ def update_data(force: bool = False, quiet: bool = False):
 def data_is_missing() -> bool:
     if not os.path.isdir(DATA_DIR):
         return True
-    spam_files = [fn for _, fn, _ in SPAM_SOURCES.values() if fn]
-    return not any(os.path.exists(os.path.join(DATA_DIR, fn)) for fn in spam_files)
+    all_files = [fn for _, fn, _ in ALL_SOURCES.values() if fn]
+    return not any(os.path.exists(os.path.join(DATA_DIR, fn)) for fn in all_files)
 
 
 def get_sources_status() -> list[dict]:
@@ -851,7 +965,7 @@ def get_sources_status() -> list[dict]:
             pass
 
     results = []
-    for key, (url, filename, label) in SPAM_SOURCES.items():
+    for key, (url, filename, label) in ALL_SOURCES.items():
         path = os.path.join(DATA_DIR, filename) if filename else None
         exists = path is not None and os.path.exists(path)
         size = os.path.getsize(path) if exists else 0
@@ -863,6 +977,7 @@ def get_sources_status() -> list[dict]:
             "filename": filename,
             "present": exists,
             "size_bytes": size,
+            "kind": "government" if key in API_SOURCES else "community",
             "last_downloaded": (
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(mtime)) if mtime else None
             ),
@@ -873,6 +988,25 @@ def get_sources_status() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Loading spam datasets — returns per-source hit counts
 # ---------------------------------------------------------------------------
+
+def _is_plausible_fcc_number(raw: str) -> bool:
+    """
+    Filter obvious placeholder/junk values out of FCC complaint records
+    (e.g. "000-000-0000", "999-999-9999") before they're treated as real
+    reported caller IDs. Consumers sometimes enter these when the true
+    caller ID was blocked/unavailable.
+    """
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) < 10:
+        return False
+    if len(set(digits)) <= 2:
+        return False
+    try:
+        parsed = phonenumbers.parse(digits, "US")
+        return phonenumbers.is_valid_number(parsed)
+    except phonenumbers.NumberParseException:
+        return False
+
 
 def _normalize_number_str(raw: str) -> Optional[str]:
     """Best-effort E.164 normalization, defaulting to US/Canada."""
@@ -940,7 +1074,7 @@ def load_spam_data() -> dict[str, set]:
     Returns dict mapping source_key → set of E.164 numbers.
     """
     result: dict[str, set] = {}
-    for key, (url, filename, _label) in SPAM_SOURCES.items():
+    for key, (url, filename, _label) in ALL_SOURCES.items():
         if filename is None:
             continue
         path = os.path.join(DATA_DIR, filename)

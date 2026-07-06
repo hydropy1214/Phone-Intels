@@ -13,6 +13,7 @@ export * from './batchLookupResponse';
 export * from './carrierType';
 export * from './createApiKeyRequest';
 export * from './dataSourceStatus';
+export * from './dataSourceStatusKind';
 export * from './errorResponse';
 export * from './healthStatus';
 export * from './hlrStatus';

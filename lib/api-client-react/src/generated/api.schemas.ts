@@ -172,6 +172,17 @@ export interface BatchLookupResponse {
   failed: number;
 }
 
+/**
+ * Whether this is a community-maintained list or an official government complaint dataset
+ */
+export type DataSourceStatusKind = typeof DataSourceStatusKind[keyof typeof DataSourceStatusKind];
+
+
+export const DataSourceStatusKind = {
+  community: 'community',
+  government: 'government',
+} as const;
+
 export interface DataSourceStatus {
   id: string;
   label: string;
@@ -180,6 +191,8 @@ export interface DataSourceStatus {
   /** Whether the local file exists */
   present: boolean;
   size_bytes: number;
+  /** Whether this is a community-maintained list or an official government complaint dataset */
+  kind: DataSourceStatusKind;
   /** ISO 8601 timestamp of last successful download */
   last_downloaded: string | null;
 }

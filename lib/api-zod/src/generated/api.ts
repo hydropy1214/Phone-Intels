@@ -197,6 +197,7 @@ export const GetPhoneSourcesResponseItem = zod.object({
   "filename": zod.string(),
   "present": zod.boolean().describe('Whether the local file exists'),
   "size_bytes": zod.number(),
+  "kind": zod.enum(['community', 'government']).describe('Whether this is a community-maintained list or an official government complaint dataset'),
   "last_downloaded": zod.string().nullable().describe('ISO 8601 timestamp of last successful download')
 })
 export const GetPhoneSourcesResponse = zod.array(GetPhoneSourcesResponseItem)

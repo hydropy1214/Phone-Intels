@@ -149,6 +149,7 @@ export interface DataSourceStatus {
   filename: string;
   present: boolean;
   size_bytes: number;
+  kind: "community" | "government";
   last_downloaded: string | null;
 }
 

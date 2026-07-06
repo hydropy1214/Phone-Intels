@@ -602,6 +602,10 @@ components:
           description: Whether the local file exists
         size_bytes:
           type: integer
+        kind:
+          type: string
+          enum: [community, government]
+          description: Whether this is a community-maintained list or an official government complaint dataset
         last_downloaded:
           type: string
           nullable: true
@@ -613,6 +617,7 @@ components:
         - filename
         - present
         - size_bytes
+        - kind
         - last_downloaded
 
     CreateApiKeyRequest:
