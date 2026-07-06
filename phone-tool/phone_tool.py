@@ -281,12 +281,20 @@ SPAM_SOURCES = {
 # it is tracked separately and labeled distinctly in results/status output.
 FCC_COMPLAINTS_ENDPOINT = "https://opendata.fcc.gov/resource/3xyp-aqkj.json"
 FCC_COMPLAINTS_FILENAME = "fcc_complaints.csv"
+FCC_COMPLAINTS_STATE_FILENAME = "fcc_sync_state.json"
 FCC_COMPLAINTS_LABEL = "FCC Consumer Complaints (Unwanted Calls / Robocalls)"
 FCC_COMPLAINTS_ISSUES = ("Unwanted Calls", "Robocalls")
 FCC_COMPLAINTS_PAGE_SIZE = 1000
-# Cap total records fetched per update so a refresh stays fast and bounded.
-# Raise this (or call --update repeatedly) to pull deeper history over time.
-FCC_COMPLAINTS_MAX_RECORDS = 25000
+# Incremental sync: once a baseline has been pulled, every subsequent
+# --update only fetches complaints newer than the last synced issue_date, so
+# a daily refresh never re-downloads what it already has and never misses a
+# newly filed complaint. The cap below only applies to the one-time initial
+# backfill (and to a catch-up run after a very long gap) — it does not limit
+# ongoing daily coverage, which is unbounded and accumulates forever.
+FCC_COMPLAINTS_BACKFILL_MAX_RECORDS = 60000
+# Safety ceiling per incremental run (covers even a multi-week gap since the
+# last sync); real day-to-day volume is far smaller than this.
+FCC_COMPLAINTS_INCREMENTAL_MAX_RECORDS = 50000
 
 # API-backed sources (queried/paginated rather than a single static file).
 API_SOURCES = {
@@ -842,66 +850,160 @@ def _download(url: str, dest_path: str, quiet: bool = False) -> bool:
         return False
 
 
-def _download_fcc_complaints(dest_path: str, quiet: bool = False) -> bool:
+def _load_fcc_sync_state() -> dict:
+    state_path = os.path.join(DATA_DIR, FCC_COMPLAINTS_STATE_FILENAME)
+    if os.path.exists(state_path):
+        try:
+            with open(state_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_fcc_sync_state(state: dict) -> None:
+    state_path = os.path.join(DATA_DIR, FCC_COMPLAINTS_STATE_FILENAME)
+    with open(state_path, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def _fetch_fcc_rows(where_clause: str, order: str, max_records: int, quiet: bool) -> list[dict]:
+    """Paginate the FCC Socrata endpoint, returning raw rows up to max_records."""
+    rows_out: list[dict] = []
+    offset = 0
+    while offset < max_records:
+        params = {
+            "$select": "caller_id_number,issue,issue_date",
+            "$where": where_clause,
+            "$order": order,
+            "$limit": FCC_COMPLAINTS_PAGE_SIZE,
+            "$offset": offset,
+        }
+        resp = requests.get(
+            FCC_COMPLAINTS_ENDPOINT,
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+            headers={"User-Agent": USER_AGENT},
+        )
+        if resp.status_code != 200:
+            if not quiet:
+                print(f"  [skip] HTTP {resp.status_code} for FCC complaints (offset={offset})")
+            break
+        rows = resp.json()
+        if not rows:
+            break
+        rows_out.extend(rows)
+        offset += FCC_COMPLAINTS_PAGE_SIZE
+        if len(rows) < FCC_COMPLAINTS_PAGE_SIZE:
+            break
+    return rows_out
+
+
+def _download_fcc_complaints(dest_path: str, quiet: bool = False, force: bool = False) -> bool:
     """
     Pull real consumer complaint records from the FCC's public Socrata Open
     Data API (no API key, no rate limit) filtered to "Unwanted Calls" and
     "Robocalls" complaint types, and write the reported caller ID numbers to
-    a local CSV cache. Paginates until FCC_COMPLAINTS_MAX_RECORDS is reached
-    or the source is exhausted.
+    a local CSV cache.
+
+    Incremental by default: after the first run, only complaints newer than
+    the last synced issue_date are fetched and merged into the existing set —
+    so a daily refresh stays fast, never re-downloads old data, and never
+    skips a newly filed complaint. Pass force=True to wipe state and redo a
+    full backfill from scratch.
     """
     if requests is None:
         return False
 
+    if force:
+        state = {}
+        existing_numbers: set = set()
+    else:
+        state = _load_fcc_sync_state()
+        existing_numbers = _ingest_file(dest_path) if os.path.exists(dest_path) else set()
+
     issue_clause = " OR ".join(f"issue='{issue}'" for issue in FCC_COMPLAINTS_ISSUES)
-    numbers: list[str] = []
-    offset = 0
+    last_synced = state.get("last_issue_date")
+
+    # Socrata sorts NULLs first on DESC order, so without an explicit
+    # "IS NOT NULL" filter a plain issue_date DESC query returns rows with a
+    # missing issue_date first — which then breaks the incremental cursor.
+    if last_synced:
+        where_clause = (
+            f"caller_id_number IS NOT NULL AND issue_date IS NOT NULL AND ({issue_clause}) "
+            f"AND issue_date > '{last_synced}'"
+        )
+        order = "issue_date ASC"
+        max_records = FCC_COMPLAINTS_INCREMENTAL_MAX_RECORDS
+        mode = "incremental"
+    else:
+        where_clause = f"caller_id_number IS NOT NULL AND issue_date IS NOT NULL AND ({issue_clause})"
+        order = "issue_date DESC"
+        max_records = FCC_COMPLAINTS_BACKFILL_MAX_RECORDS
+        mode = "backfill"
+
     try:
-        while offset < FCC_COMPLAINTS_MAX_RECORDS:
-            params = {
-                "$select": "caller_id_number,issue,issue_date",
-                "$where": f"caller_id_number IS NOT NULL AND ({issue_clause})",
-                "$limit": FCC_COMPLAINTS_PAGE_SIZE,
-                "$offset": offset,
-            }
-            resp = requests.get(
-                FCC_COMPLAINTS_ENDPOINT,
-                params=params,
-                timeout=REQUEST_TIMEOUT,
-                headers={"User-Agent": USER_AGENT},
-            )
-            if resp.status_code != 200:
-                if not quiet:
-                    print(f"  [skip] HTTP {resp.status_code} for FCC complaints (offset={offset})")
-                break
-            rows = resp.json()
-            if not rows:
-                break
-            for row in rows:
-                num = row.get("caller_id_number")
-                if num and num != "None" and _is_plausible_fcc_number(num):
-                    numbers.append(num)
-            offset += FCC_COMPLAINTS_PAGE_SIZE
-            if len(rows) < FCC_COMPLAINTS_PAGE_SIZE:
-                break
+        rows = _fetch_fcc_rows(where_clause, order, max_records, quiet)
     except Exception as e:
         if not quiet:
             print(f"  [skip] FCC complaints fetch error: {e}")
-
-    if not numbers:
         return False
 
-    unique_numbers = sorted(set(numbers))
+    if not rows and existing_numbers:
+        # Nothing new since last sync — existing data is already up to date.
+        if not quiet:
+            print(f"  [up-to-date] FCC consumer complaints (last synced: {last_synced})")
+        return True
+
+    # Some FCC complaint records have corrupted/garbage issue_date values
+    # (e.g. a data-entry typo landing centuries in the future). If we ever
+    # accepted one of those as the sync cursor, every future incremental
+    # query ("issue_date > cursor") would match nothing forever. Guard by
+    # only trusting dates within a sane window around "now".
+    today = time.strftime("%Y-%m-%dT%H:%M:%S.000", time.gmtime())
+    min_plausible_date = "2000-01-01T00:00:00.000"
+
+    def _is_plausible_date(d: str) -> bool:
+        return min_plausible_date <= d <= today
+
+    fresh_numbers: list[str] = []
+    newest_date = last_synced
+    for row in rows:
+        num = row.get("caller_id_number")
+        if num and num != "None" and _is_plausible_fcc_number(num):
+            normalized = _normalize_number_str(num)
+            if normalized:
+                fresh_numbers.append(normalized)
+        row_date = row.get("issue_date")
+        if row_date and _is_plausible_date(row_date) and (newest_date is None or row_date > newest_date):
+            newest_date = row_date
+
+    if not fresh_numbers and not existing_numbers:
+        return False
+
+    # existing_numbers (from _ingest_file) and fresh_numbers are both
+    # normalized to E.164, so the union dedupes correctly across runs.
+    combined = existing_numbers | set(fresh_numbers)
+    unique_numbers = sorted(combined)
     with open(dest_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["phone_number"])
         for num in unique_numbers:
             writer.writerow([num])
 
+    if newest_date:
+        _save_fcc_sync_state({
+            "last_issue_date": newest_date,
+            "total_numbers": len(unique_numbers),
+            "last_sync_mode": mode,
+            "last_sync_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        })
+
     if not quiet:
         print(
-            f"  [ok]   FCC consumer complaints → {os.path.relpath(dest_path, SCRIPT_DIR)} "
-            f"({len(unique_numbers):,} unique numbers from {len(numbers):,} complaints)"
+            f"  [ok]   FCC consumer complaints ({mode}) → {os.path.relpath(dest_path, SCRIPT_DIR)} "
+            f"({len(unique_numbers):,} total unique numbers, +{len(set(fresh_numbers) - existing_numbers):,} new "
+            f"from {len(rows):,} complaints fetched)"
         )
     return True
 
@@ -911,6 +1013,10 @@ def _download_fcc_complaints(dest_path: str, quiet: bool = False) -> bool:
 CUSTOM_DOWNLOADERS = {
     "fcc_complaints": _download_fcc_complaints,
 }
+
+# Sources that manage their own incremental/cache logic internally and should
+# always be invoked on --update (never skipped just because the file exists).
+ALWAYS_REFRESH_SOURCES = {"fcc_complaints"}
 
 
 def update_data(force: bool = False, quiet: bool = False):
@@ -923,14 +1029,16 @@ def update_data(force: bool = False, quiet: bool = False):
         if filename is None:
             continue
         dest = os.path.join(DATA_DIR, filename)
-        if not force and os.path.exists(dest):
+        downloader = CUSTOM_DOWNLOADERS.get(key)
+
+        if not force and key not in ALWAYS_REFRESH_SOURCES and os.path.exists(dest):
             if not quiet:
                 print(f"  [cached] {filename}")
             downloaded += 1
             continue
-        downloader = CUSTOM_DOWNLOADERS.get(key)
+
         if downloader is not None:
-            ok = downloader(dest, quiet=quiet)
+            ok = downloader(dest, quiet=quiet, force=force)
         else:
             ok = _download(url, dest, quiet=quiet)
         if ok:

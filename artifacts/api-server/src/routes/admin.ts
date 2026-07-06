@@ -5,6 +5,7 @@ import { db } from "@workspace/db";
 import { apiKeysTable } from "@workspace/db/schema";
 import { CreateApiKeyBody } from "@workspace/api-zod";
 import { requireAdminSecret } from "../middleware/apiKey";
+import { triggerDataRefresh, getRefreshStatus } from "../lib/dataRefresh";
 
 const router: IRouter = Router();
 
@@ -76,6 +77,18 @@ router.get("/admin/stats", requireAdminSecret, async (_req, res) => {
       lastUsedAt: k.lastUsedAt,
     })),
   });
+});
+
+// POST /admin/data/refresh — manually trigger the same refresh that runs
+// automatically on startup + every 24h (community lists + incremental FCC sync).
+router.post("/admin/data/refresh", requireAdminSecret, async (_req, res) => {
+  const result = await triggerDataRefresh("manual-admin");
+  res.status(202).json({ ...result, status: getRefreshStatus() });
+});
+
+// GET /admin/data/status — inspect the auto-refresh scheduler state.
+router.get("/admin/data/status", requireAdminSecret, (_req, res) => {
+  res.json(getRefreshStatus());
 });
 
 export default router;

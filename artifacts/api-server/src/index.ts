@@ -5,6 +5,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { db } from "@workspace/db";
 import { apiKeysTable } from "@workspace/db/schema";
+import { startScheduledDataRefresh } from "./lib/dataRefresh";
 
 const rawPort = process.env["PORT"];
 
@@ -76,4 +77,5 @@ app.listen(port, async (err) => {
   );
 
   await bootstrap();
+  startScheduledDataRefresh();
 });
